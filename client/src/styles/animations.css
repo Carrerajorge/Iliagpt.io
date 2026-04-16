@@ -1,0 +1,767 @@
+/* Thinking wave animation - Futuristic B&W */
+@keyframes thinkingWave {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes letterWave {
+  0%, 100% { transform: translateY(0); opacity: 0.6; }
+  50% { transform: translateY(-2px); opacity: 1; }
+}
+
+.thinking-wave {
+  display: inline-flex;
+  font-weight: 300;
+  font-size: 0.95em;
+  letter-spacing: 0.5px;
+  position: relative;
+  color: #000000;
+  background: linear-gradient(
+    90deg, 
+    #000000 0%, 
+    #444444 25%, 
+    #888888 50%, 
+    #444444 75%, 
+    #000000 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: shimmerWave 2.5s ease-in-out infinite;
+}
+
+.dark .thinking-wave {
+  color: #ffffff;
+  background: linear-gradient(
+    90deg, 
+    #ffffff 0%, 
+    #aaaaaa 25%, 
+    #666666 50%, 
+    #aaaaaa 75%, 
+    #ffffff 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+@keyframes shimmerWave {
+  0% { background-position: 100% 50%; }
+  100% { background-position: -100% 50%; }
+}
+
+@keyframes waveGradient {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Thinking cursor - elegant blinking - Futuristic B&W */
+@keyframes cursorPulse {
+  0%, 100% { opacity: 0; transform: scaleY(0.8); }
+  50% { opacity: 1; transform: scaleY(1); }
+}
+
+.thinking-cursor {
+  display: inline-block;
+  font-weight: 200;
+  font-size: 1.1em;
+  color: hsl(var(--foreground));
+  animation: cursorPulse 1s ease-in-out infinite;
+  margin-left: 2px;
+}
+
+/* Typing cursor animation */
+@keyframes cursorBlink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.typing-cursor {
+  display: inline-block;
+  font-weight: bold;
+  font-size: 1.1em;
+  color: hsl(var(--foreground));
+  animation: cursorBlink 0.8s step-end infinite;
+  margin-left: 1px;
+  vertical-align: baseline;
+}
+
+/* ========================================
+   MINIMALIST PLUS BUTTON - REFINED GLASS
+======================================== */
+
+.liquid-plus-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--muted) / 0.4);
+  border: 1px solid hsl(var(--border) / 0.5);
+  border-radius: 10px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.liquid-plus-button::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--foreground) / 0.03) 0%,
+    transparent 50%,
+    hsl(var(--foreground) / 0.02) 100%
+  );
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+.liquid-plus-button:hover {
+  background: hsl(var(--muted) / 0.6);
+  border-color: hsl(var(--border) / 0.7);
+  transform: scale(1.04);
+  box-shadow: 0 2px 8px hsl(var(--foreground) / 0.06);
+}
+
+.liquid-plus-button:hover svg {
+  color: hsl(var(--foreground));
+  transform: scale(1.08);
+}
+
+.liquid-plus-button:active {
+  transform: scale(0.96);
+  background: hsl(var(--muted) / 0.7);
+}
+
+.liquid-plus-button svg {
+  position: relative;
+  z-index: 10;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  color: hsl(var(--muted-foreground));
+  stroke-width: 2;
+}
+
+/* Dark mode - Subtle glass */
+.dark .liquid-plus-button {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark .liquid-plus-button::before {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+}
+
+.dark .liquid-plus-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+}
+
+.dark .liquid-plus-button:hover svg {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.dark .liquid-plus-button:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dark .liquid-plus-button svg {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Focus state */
+.liquid-plus-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring) / 0.4);
+}
+
+/* ========================================
+   LIQUID BUTTON EFFECTS
+======================================== */
+
+.liquid-button {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: center;
+}
+
+.liquid-button::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  background: radial-gradient(circle, hsl(var(--foreground) / 0.1) 0%, transparent 70%);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition: width 0.4s ease, height 0.4s ease;
+  pointer-events: none;
+}
+
+.liquid-button:hover::before {
+  width: 200%;
+  height: 200%;
+}
+
+.liquid-button:hover {
+  transform: scale(1.02) translateY(-1px);
+  background-color: hsl(var(--foreground) / 0.05) !important;
+}
+
+.liquid-button:active {
+  transform: scale(0.97);
+  transition: transform 0.08s ease;
+}
+
+.liquid-button:active::before {
+  background: radial-gradient(circle, hsl(var(--foreground) / 0.2) 0%, transparent 60%);
+  width: 250%;
+  height: 250%;
+}
+
+/* Ripple effect on click */
+@keyframes liquidRipple {
+  0% {
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.5);
+    opacity: 0;
+  }
+}
+
+.liquid-button::after {
+  content: '';
+  position: absolute;
+  top: var(--ripple-y, 50%);
+  left: var(--ripple-x, 50%);
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle, hsl(var(--foreground) / 0.15) 0%, transparent 50%);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.liquid-button.rippling::after {
+  animation: liquidRipple 0.5s ease-out forwards;
+}
+
+/* Icon animation on hover */
+.liquid-button svg {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.liquid-button:hover svg {
+  transform: scale(1.1);
+}
+
+.liquid-button:active svg {
+  transform: scale(0.9);
+}
+
+/* Liquid Float Animation for Document Tool Icons */
+@keyframes liquid-float {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+    border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
+  }
+  25% {
+    transform: translateY(-2px) scale(1.02);
+    border-radius: 70% 30% 30% 70% / 70% 70% 30% 30%;
+  }
+  50% {
+    transform: translateY(0) scale(1);
+    border-radius: 30% 70% 50% 50% / 50% 30% 70% 50%;
+  }
+  75% {
+    transform: translateY(-1px) scale(1.01);
+    border-radius: 50% 50% 30% 70% / 30% 70% 50% 50%;
+  }
+}
+
+/* Liquid shine effect */
+@keyframes liquid-shine {
+  0% {
+    background-position: -100% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* ========================================
+   EXCEL STREAMING ANIMATIONS
+======================================== */
+
+/* Blinking cursor for streaming cell */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.animate-blink {
+  animation: blink 0.8s step-end infinite;
+}
+
+/* Green flash for recently written cells */
+@keyframes flash-green {
+  0% { 
+    background-color: rgb(34, 197, 94);
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+  }
+  100% { 
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.animate-flash-green {
+  animation: flash-green 1.5s ease-out forwards;
+}
+
+/* Slide up animation for streaming indicator */
+@keyframes slide-up {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out forwards;
+}
+
+/* Pulse ring for streaming indicator */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+.streaming-indicator .pulse-ring {
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+/* ========================================
+   PROFESSIONAL UI ANIMATIONS
+======================================== */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes slideUp {
+  from { 
+    opacity: 0; 
+    transform: translateY(10px); 
+  }
+  to { 
+    opacity: 1; 
+    transform: translateY(0); 
+  }
+}
+
+@keyframes slideDown {
+  from { 
+    opacity: 0; 
+    transform: translateY(-10px); 
+  }
+  to { 
+    opacity: 1; 
+    transform: translateY(0); 
+  }
+}
+
+@keyframes scaleIn {
+  from { 
+    opacity: 0; 
+    transform: scale(0.95); 
+  }
+  to { 
+    opacity: 1; 
+    transform: scale(1); 
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { 
+    box-shadow: 0 0 5px rgba(99, 102, 241, 0.5); 
+  }
+  50% { 
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.8); 
+  }
+}
+
+@keyframes bounce-subtle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.animate-fade-out {
+  animation: fadeOut 0.2s ease-out forwards;
+}
+
+.animate-slide-down {
+  animation: slideDown 0.3s ease-out forwards;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.2s ease-out forwards;
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.dark .animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.15) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Shimmer text effect - animated gradient over text (light mode) */
+.shimmer-text {
+  background: linear-gradient(110deg, #00000066 0%, #00000066 42%, #000000ee 50%, #00000066 58%, #00000066 100%) !important;
+  background-size: 220% 100% !important;
+  background-position: -120% 0 !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+  animation: shimmerTextAnim 1.1s linear infinite !important;
+}
+
+/* Shimmer text effect - dark mode */
+.dark .shimmer-text {
+  background: linear-gradient(110deg, #ffffff40 0%, #ffffff40 42%, #ffffffee 50%, #ffffff40 58%, #ffffff40 100%) !important;
+  background-size: 220% 100% !important;
+  background-position: -120% 0 !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+}
+
+/* Shimmer narration - optimized for light backgrounds */
+.shimmer-narration {
+  background: linear-gradient(110deg, #1e40afaa 0%, #1e40afaa 42%, #1e40af 50%, #1e40afaa 58%, #1e40afaa 100%) !important;
+  background-size: 220% 100% !important;
+  background-position: -120% 0 !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+  animation: shimmerTextAnim 1.1s linear infinite !important;
+}
+
+.dark .shimmer-narration {
+  background: linear-gradient(110deg, #93c5fdaa 0%, #93c5fdaa 42%, #dbeafe 50%, #93c5fdaa 58%, #93c5fdaa 100%) !important;
+  background-size: 220% 100% !important;
+  background-position: -120% 0 !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+}
+
+@keyframes shimmerTextAnim {
+  to { background-position: 120% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text,
+  .shimmer-narration {
+    animation: none !important;
+    background: none !important;
+    color: inherit !important;
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-bounce-subtle {
+  animation: bounce-subtle 0.6s ease-in-out;
+}
+
+/* Skeleton loading */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 0%,
+    hsl(var(--muted-foreground) / 0.1) 50%,
+    hsl(var(--muted)) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 0.375rem;
+}
+
+.skeleton-text {
+  height: 1rem;
+  width: 100%;
+}
+
+.skeleton-title {
+  height: 1.5rem;
+  width: 60%;
+}
+
+.skeleton-avatar {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+}
+
+.skeleton-card {
+  height: 8rem;
+  border-radius: 0.75rem;
+}
+
+/* Hover effects */
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.transition-smooth {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ========================================
+   STREAMING INDICATOR ANIMATIONS
+======================================== */
+
+/* Typing dots animation */
+@keyframes typingDot {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+  animation: typingDot 1.4s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Prominent cancel button pulse */
+@keyframes cancelPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+}
+
+.cancel-button-pulse {
+  animation: cancelPulse 2s ease-in-out infinite;
+}
+
+/* Content fade in animation */
+@keyframes contentFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-content-fade-in {
+  animation: contentFadeIn 0.3s ease-out forwards;
+}
+
+/* Token counter pulse */
+@keyframes tokenPulse {
+  0%, 100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.token-counter-pulse {
+  animation: tokenPulse 1.5s ease-in-out infinite;
+}
+
+/* Streaming indicator container */
+.streaming-indicator-container {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* ========================================
+   VIEW TRANSITIONS - SMOOTH ANIMATIONS
+======================================== */
+
+/* Fade in with subtle slide up */
+@keyframes viewFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Fade out with slide down */
+@keyframes viewFadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* Slide in from right */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Slide in from left */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Scale up animation */
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Utility classes */
+.view-transition-enter {
+  animation: viewFadeIn 200ms ease-out forwards;
+}
+
+.view-transition-exit {
+  animation: viewFadeOut 150ms ease-in forwards;
+}
+
+.slide-in-right {
+  animation: slideInRight 200ms ease-out forwards;
+}
+
+.slide-in-left {
+  animation: slideInLeft 200ms ease-out forwards;
+}
+
+.scale-in {
+  animation: scaleIn 200ms ease-out forwards;
+}
+
+/* Staggered children animations */
+.stagger-children > * {
+  animation: viewFadeIn 200ms ease-out forwards;
+  animation-fill-mode: both;
+}
+
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 50ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 100ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 150ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 200ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 250ms; }
+

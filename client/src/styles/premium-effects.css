@@ -1,0 +1,349 @@
+/* ========================================
+   PREMIUM VISUAL EFFECTS
+   Modern glassmorphism, gradients, and animations
+======================================== */
+
+/* Glassmorphism Cards */
+.glass-premium {
+    background: rgba(255, 255, 255, 0.08);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.dark .glass-premium {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Animated Gradient Background */
+.gradient-animated {
+    background: linear-gradient(135deg,
+            hsl(240 40% 10%) 0%,
+            hsl(280 50% 15%) 25%,
+            hsl(260 45% 12%) 50%,
+            hsl(220 40% 10%) 75%,
+            hsl(240 40% 10%) 100%);
+    background-size: 400% 400%;
+    animation: gradient-shift 15s ease infinite;
+}
+
+@keyframes gradient-shift {
+
+    0%,
+    100% {
+        background-position: 0% 50%;
+    }
+
+    25% {
+        background-position: 100% 0%;
+    }
+
+    50% {
+        background-position: 100% 100%;
+    }
+
+    75% {
+        background-position: 0% 100%;
+    }
+}
+
+/* Floating Orb Effects */
+.floating-orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.5;
+    animation: float 8s ease-in-out infinite;
+}
+
+.floating-orb-1 {
+    width: 400px;
+    height: 400px;
+    background: linear-gradient(135deg, hsl(280 70% 50% / 0.4), hsl(320 60% 40% / 0.3));
+    top: 10%;
+    left: 15%;
+    animation-delay: 0s;
+}
+
+.floating-orb-2 {
+    width: 350px;
+    height: 350px;
+    background: linear-gradient(135deg, hsl(220 70% 50% / 0.3), hsl(260 60% 40% / 0.2));
+    bottom: 20%;
+    right: 10%;
+    animation-delay: -4s;
+}
+
+.floating-orb-3 {
+    width: 250px;
+    height: 250px;
+    background: linear-gradient(135deg, hsl(200 70% 50% / 0.2), hsl(180 60% 40% / 0.15));
+    top: 50%;
+    left: 60%;
+    animation-delay: -2s;
+}
+
+@keyframes float {
+
+    0%,
+    100% {
+        transform: translate(0, 0) scale(1);
+    }
+
+    25% {
+        transform: translate(20px, -30px) scale(1.05);
+    }
+
+    50% {
+        transform: translate(-10px, 20px) scale(0.95);
+    }
+
+    75% {
+        transform: translate(-30px, -10px) scale(1.02);
+    }
+}
+
+/* Premium Button Effects */
+.btn-premium {
+    position: relative;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+}
+
+.btn-premium::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, transparent 40%, rgba(255, 255, 255, 0.1) 50%, transparent 60%);
+    transform: translateX(-100%);
+    transition: transform 0.6s ease;
+}
+
+.btn-premium:hover::before {
+    transform: translateX(100%);
+}
+
+.btn-premium:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 40px rgba(var(--primary-rgb, 139, 92, 246), 0.25);
+}
+
+.btn-premium:active {
+    transform: translateY(0);
+}
+
+/* Text Gradient Effect */
+.text-gradient-premium {
+    background: linear-gradient(135deg,
+            hsl(280 80% 70%) 0%,
+            hsl(320 70% 65%) 50%,
+            hsl(260 75% 70%) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-size: 200% 200%;
+    animation: text-shimmer 3s ease-in-out infinite;
+}
+
+@keyframes text-shimmer {
+
+    0%,
+    100% {
+        background-position: 0% 50%;
+    }
+
+    50% {
+        background-position: 100% 50%;
+    }
+}
+
+/* Card Hover Lift */
+.card-lift {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-lift:hover {
+    transform: translateY(-4px);
+    box-shadow:
+        0 20px 40px rgba(0, 0, 0, 0.15),
+        0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+/* Input Glow Effect */
+.input-glow {
+    transition: all 0.3s ease;
+}
+
+.input-glow:focus {
+    box-shadow:
+        0 0 0 2px hsl(var(--primary) / 0.3),
+        0 0 20px hsl(var(--primary) / 0.15);
+}
+
+/* Staggered Fade In */
+.fade-in-up {
+    opacity: 0;
+    transform: translateY(20px);
+    animation: fadeInUp 0.6s ease forwards;
+}
+
+.fade-in-up-delay-1 {
+    animation-delay: 0.1s;
+}
+
+.fade-in-up-delay-2 {
+    animation-delay: 0.2s;
+}
+
+.fade-in-up-delay-3 {
+    animation-delay: 0.3s;
+}
+
+.fade-in-up-delay-4 {
+    animation-delay: 0.4s;
+}
+
+.fade-in-up-delay-5 {
+    animation-delay: 0.5s;
+}
+
+@keyframes fadeInUp {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ========================================
+   LUXE (WHITE + SILVER + GOLD) PRESET
+   Used on the /welcome landing page preview.
+======================================== */
+
+/* Clean white background */
+.landing-luxe {
+    background: #ffffff;
+}
+
+/* Light glass card for white backgrounds */
+.glass-luxe {
+    background: rgba(255, 255, 255, 0.78);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    box-shadow:
+        0 10px 30px rgba(0, 0, 0, 0.10),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Silver fill with illuminated gold stroke (photo-inspired). */
+.text-luxe {
+    --luxe-stroke: 1.75px;
+    --luxe-gold: rgba(206, 166, 78, 0.95);
+    --luxe-glow-1: rgba(255, 220, 140, 0.55);
+    --luxe-glow-2: rgba(216, 179, 95, 0.35);
+    --luxe-glow-3: rgba(216, 179, 95, 0.20);
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    z-index: 0; /* creates stacking context so ::after can sit behind */
+    color: transparent;
+    background: linear-gradient(180deg,
+            #f7f7f7 0%,
+            #d8d8d8 16%,
+            #9d9d9d 38%,
+            #fdfdfd 56%,
+            #8c8c8c 76%,
+            #e9e9e9 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow:
+        0 1px 0 rgba(0, 0, 0, 0.18),
+        0 10px 20px rgba(0, 0, 0, 0.06);
+}
+
+.text-luxe::after {
+    content: attr(data-text);
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    color: transparent;
+    -webkit-text-stroke: var(--luxe-stroke) var(--luxe-gold);
+    text-shadow:
+        0 0 6px var(--luxe-glow-1),
+        0 0 16px var(--luxe-glow-2),
+        0 0 30px var(--luxe-glow-3);
+    filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.14));
+}
+
+.text-luxe-sm {
+    --luxe-stroke: 1.2px;
+}
+
+.text-luxe-lg {
+    --luxe-stroke: 2.1px;
+}
+
+/* Gold shimmer button treatment for the luxe landing. */
+.btn-luxe {
+    position: relative;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+}
+
+.btn-luxe::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, transparent 38%, rgba(255, 220, 140, 0.28) 50%, transparent 62%);
+    transform: translateX(-100%);
+    transition: transform 0.6s ease;
+}
+
+.btn-luxe:hover::before {
+    transform: translateX(100%);
+}
+
+.btn-luxe:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 40px rgba(216, 179, 95, 0.22);
+}
+
+.btn-luxe:active {
+    transform: translateY(0);
+}
+
+/* Pulse Glow */
+.pulse-glow {
+    animation: pulseGlow 2s ease-in-out infinite;
+}
+
+@keyframes pulseGlow {
+
+    0%,
+    100% {
+        box-shadow: 0 0 20px hsl(var(--primary) / 0.2);
+    }
+
+    50% {
+        box-shadow: 0 0 40px hsl(var(--primary) / 0.4);
+    }
+}
+
+/* Smooth Scale on Hover */
+.scale-hover {
+    transition: transform 0.2s ease;
+}
+
+.scale-hover:hover {
+    transform: scale(1.02);
+}
+
+.scale-hover:active {
+    transform: scale(0.98);
+}

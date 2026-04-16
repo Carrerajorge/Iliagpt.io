@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>y = x² - 4x + 3</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: monospace; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
+  canvas { width: 100%; border-radius: 8px; cursor: crosshair; }
+  .controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #94a3b8; }
+  button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+  button:hover { background: #334155; }
+  .info { font-size: 11px; color: #64748b; }
+  h1 { font-size: 14px; font-weight: bold; color: #e2e8f0; }
+</style>
+</head>
+<body>
+<h1>📈 y = x² - 4x + 3</h1>
+<canvas id="c"></canvas>
+<div class="controls">
+  <span class="info">Scroll to zoom · Drag to pan · Hover for values</span>
+  <button onclick="resetView()">Reset View</button>
+</div>
+<div id="coord" class="info"></div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let zoom = 1, panX = 0, panY = 0;
+let isDragging = false, lastMx = 0, lastMy = 0;
+let hoverX = null, hoverY = null;
+
+const EXPR = "x^2-4*x+3";
+const TITLE = "y = x² - 4x + 3";
+const X_MIN_BASE = -1;
+const X_MAX_BASE = 5;
+const EXTRA = [];
+const COLORS = ['#818cf8', '#34d399', '#f59e0b', '#f87171', '#60a5fa'];
+
+function evalExpr(expr, x) {
+  try {
+    const cleaned = expr.replace(/\^/g,'**')
+      .replace(/\bx\b/g, '(' + x + ')')
+      .replace(/\bpi\b/gi, Math.PI)
+      .replace(/\bsin\(/g,'Math.sin(')
+      .replace(/\bcos\(/g,'Math.cos(')
+      .replace(/\btan\(/g,'Math.tan(')
+      .replace(/\bsqrt\(/g,'Math.sqrt(')
+      .replace(/\babs\(/g,'Math.abs(')
+      .replace(/\bexp\(/g,'Math.exp(')
+      .replace(/\bln\(/g,'Math.log(')
+      .replace(/\blog\(/g,'Math.log10(')
+      .replace(/\bpow\(/g,'Math.pow(');
+    const f = new Function('Math', 'return ' + cleaned);
+    const r = f(Math);
+    return (typeof r === 'number' && isFinite(r)) ? r : NaN;
+  } catch(e) { return NaN; }
+}
+
+function getXRange() {
+  const xMin = X_MIN_BASE / zoom + panX;
+  const xMax = X_MAX_BASE / zoom + panX;
+  return [xMin, xMax];
+}
+
+function resize() {
+  canvas.width = canvas.offsetWidth * devicePixelRatio;
+  canvas.height = Math.min(450, Math.round(canvas.offsetWidth * 0.65)) * devicePixelRatio;
+  canvas.style.height = Math.min(450, Math.round(canvas.offsetWidth * 0.65)) + 'px';
+  draw();
+}
+
+function getPoints(expr, xMin, xMax) {
+  const W = canvas.width, steps = Math.max(200, W / 2);
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const x = xMin + (i / steps) * (xMax - xMin);
+    const y = evalExpr(expr, x);
+    if (!isNaN(y)) pts.push({x, y});
+  }
+  return pts;
+}
+
+function draw() {
+  const W = canvas.width, H = canvas.height;
+  const pad = Math.round(42 * devicePixelRatio);
+  const [xMin, xMax] = getXRange();
+
+  // Get y range from data
+  const allPts = [getPoints(EXPR, xMin, xMax), ...EXTRA.map(e => getPoints(e.expr, xMin, xMax))];
+  const allY = allPts.flat().map(p => p.y).filter(y => isFinite(y));
+  let yMin = allY.length ? Math.min(...allY) : -10;
+  let yMax = allY.length ? Math.max(...allY) : 10;
+  if (yMax - yMin < 0.01) { yMin -= 5; yMax += 5; }
+  const yPad = (yMax - yMin) * 0.05;
+  yMin -= yPad; yMax += yPad;
+
+  function toPixel(x, y) {
+    const px = pad + (x - xMin) / (xMax - xMin) * (W - 2 * pad);
+    const py = H - pad - (y - yMin) / (yMax - yMin) * (H - 2 * pad);
+    return [px, py];
+  }
+
+  // Background
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#1e293b';
+  ctx.lineWidth = 1;
+  const xTicks = 10, yTicks = 8;
+  for (let i = 0; i <= xTicks; i++) {
+    const x = xMin + (i/xTicks)*(xMax-xMin);
+    const [px] = toPixel(x, 0);
+    ctx.beginPath(); ctx.moveTo(px, pad); ctx.lineTo(px, H-pad); ctx.stroke();
+  }
+  for (let i = 0; i <= yTicks; i++) {
+    const y = yMin + (i/yTicks)*(yMax-yMin);
+    const [,py] = toPixel(0, y);
+    ctx.beginPath(); ctx.moveTo(pad, py); ctx.lineTo(W-pad, py); ctx.stroke();
+  }
+
+  // Axes
+  ctx.strokeStyle = '#475569'; ctx.lineWidth = 1.5;
+  if (yMin <= 0 && yMax >= 0) { const [,py0] = toPixel(0,0); ctx.beginPath(); ctx.moveTo(pad,py0); ctx.lineTo(W-pad,py0); ctx.stroke(); }
+  if (xMin <= 0 && xMax >= 0) { const [px0] = toPixel(0,0); ctx.beginPath(); ctx.moveTo(px0,pad); ctx.lineTo(px0,H-pad); ctx.stroke(); }
+
+  // Axis labels
+  ctx.fillStyle = '#64748b'; ctx.font = (10*devicePixelRatio)+'px monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i <= xTicks; i++) {
+    const x = xMin + (i/xTicks)*(xMax-xMin);
+    const [px] = toPixel(x, yMin);
+    ctx.fillText(x.toFixed(1), px, H-pad+14*devicePixelRatio);
+  }
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= yTicks; i++) {
+    const y = yMin + (i/yTicks)*(yMax-yMin);
+    const [,py] = toPixel(xMin, y);
+    ctx.fillText(y.toFixed(1), pad-4, py+4);
+  }
+
+  // Curves
+  const curves = [{expr: EXPR, color: COLORS[0]}, ...EXTRA.map((e,i) => ({expr:e.expr, color: e.color || COLORS[i+1]}))];
+  curves.forEach(({expr, color}, idx) => {
+    const pts = allPts[idx];
+    ctx.strokeStyle = color; ctx.lineWidth = 2.5 * devicePixelRatio; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let started = false;
+    for (const pt of pts) {
+      const [px,py] = toPixel(pt.x, pt.y);
+      if (!started) { ctx.moveTo(px,py); started=true; } else ctx.lineTo(px,py);
+    }
+    ctx.stroke();
+  });
+
+  // Hover point
+  if (hoverX !== null) {
+    const hY = evalExpr(EXPR, hoverX);
+    if (!isNaN(hY)) {
+      const [hpx, hpy] = toPixel(hoverX, hY);
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = devicePixelRatio;
+      ctx.setLineDash([4*devicePixelRatio, 4*devicePixelRatio]);
+      ctx.beginPath(); ctx.moveTo(hpx,pad); ctx.lineTo(hpx,H-pad); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pad,hpy); ctx.lineTo(W-pad,hpy); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = COLORS[0];
+      ctx.beginPath(); ctx.arc(hpx,hpy,5*devicePixelRatio,0,2*Math.PI); ctx.fill();
+      document.getElementById('coord').textContent = 'x = ' + hoverX.toFixed(3) + ', y = ' + hY.toFixed(3);
+    }
+  }
+
+  // Title
+  ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold '+(13*devicePixelRatio)+'px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(TITLE, W/2, 18*devicePixelRatio);
+}
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoom *= e.deltaY > 0 ? 0.85 : 1.18;
+  zoom = Math.min(Math.max(zoom, 0.05), 100);
+  draw();
+}, {passive: false});
+
+canvas.addEventListener('mousedown', e => { isDragging=true; lastMx=e.clientX; lastMy=e.clientY; });
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) / rect.width * canvas.width;
+  const [xMin, xMax] = getXRange();
+  const pad = 42 * devicePixelRatio;
+  hoverX = xMin + (mx - pad) / (canvas.width - 2*pad) * (xMax - xMin);
+  if (isDragging) {
+    const dxPx = e.clientX - lastMx, dyPx = e.clientY - lastMy;
+    const [xMin2, xMax2] = getXRange();
+    panX -= dxPx / canvas.offsetWidth * (xMax2 - xMin2);
+    lastMx=e.clientX; lastMy=e.clientY;
+  }
+  draw();
+});
+canvas.addEventListener('mouseup', () => isDragging=false);
+canvas.addEventListener('mouseleave', () => { isDragging=false; hoverX=null; document.getElementById('coord').textContent=''; draw(); });
+
+function resetView() { zoom=1; panX=0; panY=0; draw(); }
+
+new ResizeObserver(resize).observe(canvas);
+resize();
+</script>
+</body>
+</html>

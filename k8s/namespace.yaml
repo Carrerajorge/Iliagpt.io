@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: iliagpt
+  labels:
+    name: iliagpt
+    app.kubernetes.io/name: iliagpt
+    app.kubernetes.io/managed-by: kubectl
+    environment: production

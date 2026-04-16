@@ -1,0 +1,314 @@
+{
+  "timestamp": "2026-01-06T17:29:01.726Z",
+  "totalScenarios": 6,
+  "passed": 6,
+  "failed": 0,
+  "scenarios": [
+    {
+      "name": "web_search_real_results",
+      "success": true,
+      "durationMs": 175,
+      "artifacts": [],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "query": "artificial intelligence",
+            "resultsCount": 5,
+            "results": [
+              {
+                "title": "Artificial intelligence",
+                "url": "https://en.wikipedia.org/wiki/Artificial_intelligence",
+                "snippet": ""
+              },
+              {
+                "title": "Artificial intelligence in video games",
+                "url": "https://en.wikipedia.org/wiki/Artificial_intelligence_in_video_games",
+                "snippet": ""
+              },
+              {
+                "title": "Artificial intelligence in healthcare",
+                "url": "https://en.wikipedia.org/wiki/Artificial_intelligence_in_healthcare",
+                "snippet": ""
+              },
+              {
+                "title": "Artificial intelligence visual art",
+                "url": "https://en.wikipedia.org/wiki/Artificial_intelligence_visual_art",
+                "snippet": ""
+              },
+              {
+                "title": "Artificial intelligence industry in China",
+                "url": "https://en.wikipedia.org/wiki/Artificial_intelligence_industry_in_China",
+                "snippet": ""
+              }
+            ],
+            "source": "wikipedia-opensearch",
+            "searchPerformed": true,
+            "timestamp": "2026-01-06T17:29:01.545Z"
+          },
+          "message": "Found 5 results for \"artificial intelligence\""
+        },
+        "trace": {
+          "requestId": "bbc8d0c3-ff7b-40e4-9e4f-95ab149825d8",
+          "toolName": "web_search",
+          "durationMs": 115,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "data_analyze_numeric_results",
+      "success": true,
+      "durationMs": 12,
+      "artifacts": [],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "count": 10,
+            "sum": 325,
+            "mean": 32.5,
+            "median": 32.5,
+            "min": 10,
+            "max": 55,
+            "range": 45,
+            "variance": 206.25,
+            "stdDev": 14.3614,
+            "operation": "statistics",
+            "timestamp": "2026-01-06T17:29:01.565Z"
+          },
+          "message": "Analyzed 10 data points: mean=32.5, median=32.5"
+        },
+        "trace": {
+          "requestId": "df929a1b-4ae5-46c4-8284-1cb469cf00f4",
+          "toolName": "data_analyze",
+          "durationMs": 1,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "document_create_file_artifact",
+      "success": true,
+      "durationMs": 5,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/E2E_Test_Document_1767720541572.txt"
+      ],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "documentId": "7513a8c4-1f94-4340-a717-e306bae13edc",
+            "title": "E2E_Test_Document",
+            "type": "txt",
+            "filePath": "/home/runner/workspace/artifacts/E2E_Test_Document_1767720541572.txt",
+            "fileSize": 92,
+            "created": "2026-01-06T17:29:01.572Z"
+          },
+          "message": "Created document \"E2E_Test_Document\" at /home/runner/workspace/artifacts/E2E_Test_Document_1767720541572.txt"
+        },
+        "trace": {
+          "requestId": "2f2d6b6b-bca1-4296-afad-13462a8e6ff0",
+          "toolName": "document_create",
+          "durationMs": 0,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "pdf_generate_file_artifact",
+      "success": true,
+      "durationMs": 5,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/E2E_Test_PDF_1767720541580.pdf"
+      ],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "pdfId": "4fbe5897-c1f8-4c5c-9d88-00763d912db4",
+            "title": "E2E_Test_PDF",
+            "filePath": "/home/runner/workspace/artifacts/E2E_Test_PDF_1767720541580.pdf",
+            "fileSize": 637,
+            "pageCount": 1,
+            "created": "2026-01-06T17:29:01.580Z"
+          },
+          "message": "Generated PDF \"E2E_Test_PDF\" at /home/runner/workspace/artifacts/E2E_Test_PDF_1767720541580.pdf"
+        },
+        "trace": {
+          "requestId": "085db109-6882-46a6-84c7-72411ee7e67c",
+          "toolName": "pdf_generate",
+          "durationMs": 1,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "browse_url_html_capture",
+      "success": true,
+      "durationMs": 137,
+      "artifacts": [],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "url": "https://httpbin.org/html",
+            "title": "No title",
+            "status": 200,
+            "contentLength": 3739,
+            "textPreview": "Herman Melville - Moby-Dick Availing himself of the mild, summer-cool weather that now reigned in these latitudes, and in preparation for the peculiarly active pursuits shortly to be anticipated, Perth, the begrimed, blistered old blacksmith, had not removed his portable forge to the hold again, after concluding his contributory work for Ahab's leg, but still retained it on deck, fast lashed to ringbolts by the foremast; being now almost incessantly invoked by the headsmen, and harpooneers, and ",
+            "fullTextLength": 3594,
+            "timestamp": "2026-01-06T17:29:01.718Z"
+          },
+          "message": "Fetched \"No title\" (3739 bytes)"
+        },
+        "trace": {
+          "requestId": "3289de97-de57-4146-abef-fda394a23a36",
+          "toolName": "browse_url",
+          "durationMs": 132,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "workflow_with_failure_handling",
+      "success": true,
+      "durationMs": 5,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.txt",
+        "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.pdf"
+      ],
+      "evidence": {
+        "success": false,
+        "type": "workflow",
+        "intent": {
+          "query": "search for nonexistent_random_term_xyz123 and create document",
+          "intent": "document",
+          "confidence": 0.8,
+          "suggestedAgent": "Document",
+          "suggestedTools": [
+            "document_create",
+            "pdf_generate",
+            "slides_create",
+            "template_fill"
+          ],
+          "complexity": "complex"
+        },
+        "evidence": [
+          {
+            "stepId": "step_1",
+            "toolName": "document_create",
+            "input": {
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "content": "search for nonexistent_random_term_xyz123 and create document",
+              "type": "txt"
+            },
+            "output": {
+              "documentId": "c9791b16-c0fb-4256-b2b2-c9a2bf8c703c",
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "type": "txt",
+              "filePath": "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.txt",
+              "fileSize": 164,
+              "created": "2026-01-06T17:29:01.724Z"
+            },
+            "schemaValidation": "pass",
+            "requestId": "f1bffd86-b8e4-4ca6-a4f0-56af7d8d6778",
+            "durationMs": 0,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": true,
+            "status": "completed",
+            "artifacts": [
+              "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.txt"
+            ]
+          },
+          {
+            "stepId": "step_2",
+            "toolName": "pdf_generate",
+            "input": {
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "content": "search for nonexistent_random_term_xyz123 and create document"
+            },
+            "output": {
+              "pdfId": "89f5a597-f57e-4eb2-a38c-130de3dd7f34",
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "filePath": "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.pdf",
+              "fileSize": 711,
+              "pageCount": 1,
+              "created": "2026-01-06T17:29:01.724Z"
+            },
+            "schemaValidation": "pass",
+            "requestId": "4ee452f4-7960-46ac-a2c7-41ddad066075",
+            "durationMs": 0,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": true,
+            "status": "completed",
+            "artifacts": [
+              "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.pdf"
+            ]
+          },
+          {
+            "stepId": "step_3",
+            "toolName": "slides_create",
+            "input": {
+              "query": "search for nonexistent_random_term_xyz123 and create document"
+            },
+            "output": null,
+            "schemaValidation": "fail",
+            "requestId": "a136456a-928a-4b78-8207-6b6176c0b77a",
+            "durationMs": 1,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": false,
+            "status": "failed"
+          },
+          {
+            "stepId": "step_4",
+            "toolName": "template_fill",
+            "input": {
+              "query": "search for nonexistent_random_term_xyz123 and create document"
+            },
+            "output": null,
+            "schemaValidation": "fail",
+            "requestId": "7d98bab6-3a5f-43bb-b39c-f36707089095",
+            "durationMs": 0,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": false,
+            "status": "failed"
+          }
+        ],
+        "summary": {
+          "totalSteps": 4,
+          "completedSteps": 2,
+          "failedSteps": 2,
+          "skippedSteps": 0,
+          "totalDurationMs": 2,
+          "replans": 0,
+          "allValidationsPassed": false
+        },
+        "artifacts": [
+          "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.txt",
+          "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720541724.pdf"
+        ],
+        "firstFailure": {
+          "stepId": "step_3",
+          "toolName": "slides_create",
+          "errorStack": "Input validation failed: [\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"undefined\",\n    \"path\": [\n      \"title\"\n    ],\n    \"message\": \"Required\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"array\",\n    \"received\": \"undefined\",\n    \"path\": [\n      \"slides\"\n    ],\n    \"message\": \"Required\"\n  }\n]"
+        }
+      }
+    }
+  ],
+  "exitCode": 0
+}

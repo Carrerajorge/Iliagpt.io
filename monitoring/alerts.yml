@@ -1,0 +1,270 @@
+groups:
+
+  # ── Application availability ─────────────────────────────────────────────────
+  - name: iliagpt.availability
+    interval: 30s
+    rules:
+      - alert: AppDown
+        expr: up{job="iliagpt-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "IliaGPT instance {{ $labels.pod }} is down"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been down for more than 1 minute."
+          runbook: "https://runbooks.iliagpt.io/app-down"
+
+      - alert: AppHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="iliagpt-app",status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="iliagpt-app"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High HTTP 5xx error rate ({{ $value | humanizePercentage }})"
+          description: "Error rate has exceeded 5% for 5 minutes."
+
+      - alert: AppHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="iliagpt-app"}[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "P99 latency {{ $value | humanizeDuration }} exceeds 2s"
+          description: "99th percentile request latency is above 2 seconds."
+
+      - alert: AppHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="iliagpt-app"}[5m])) by (le)
+          ) > 5
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "P95 latency {{ $value | humanizeDuration }} exceeds 5s"
+          description: "95th percentile request latency exceeds 5 seconds for 10 minutes."
+
+      - alert: PodRestartingFrequently
+        expr: rate(kube_pod_container_status_restarts_total{namespace="iliagpt"}[15m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} is restarting frequently"
+          description: "Pod {{ $labels.pod }} has restarted {{ $value | printf \"%.0f\" }} times in the last 15 minutes."
+
+  # ── LLM providers ─────────────────────────────────────────────────────────────
+  - name: iliagpt.llm
+    rules:
+      - alert: LLMProviderCircuitOpen
+        expr: llm_circuit_breaker_state{state="open"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "Circuit breaker OPEN for LLM provider {{ $labels.provider }}"
+          description: "Provider {{ $labels.provider }} circuit breaker has been open for 1 minute. Fallback chain is active."
+
+      - alert: LLMHighErrorRate
+        expr: |
+          sum(rate(llm_requests_total{status="error"}[5m])) by (provider)
+          /
+          sum(rate(llm_requests_total[5m])) by (provider) > 0.10
+        for: 5m
+        labels:
+          severity: critical
+          team: ai
+        annotations:
+          summary: "LLM provider {{ $labels.provider }} error rate {{ $value | humanizePercentage }}"
+
+      - alert: LLMHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(llm_request_duration_seconds_bucket[5m])) by (le, provider)
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM provider {{ $labels.provider }} P95 latency {{ $value | humanizeDuration }}"
+
+      - alert: LLMBudgetNearLimit
+        expr: llm_daily_cost_usd / llm_daily_budget_usd > 0.85
+        for: 15m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "LLM daily budget {{ $value | humanizePercentage }} consumed for user tier {{ $labels.tier }}"
+
+      - alert: LLMBudgetExceeded
+        expr: llm_daily_cost_usd / llm_daily_budget_usd > 1.0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM daily budget EXCEEDED for tier {{ $labels.tier }}"
+
+  # ── Database ──────────────────────────────────────────────────────────────────
+  - name: iliagpt.database
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: data
+        annotations:
+          summary: "PostgreSQL is down"
+          runbook: "https://runbooks.iliagpt.io/postgres-down"
+
+      - alert: PostgresHighConnections
+        expr: pg_stat_activity_count > 180
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connections {{ $value }} approaching limit (200)"
+
+      - alert: PostgresHighReplicationLag
+        expr: pg_replication_lag > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL replication lag {{ $value | humanizeDuration }}"
+
+      - alert: PostgresLowDiskSpace
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/var/lib/postgresql"} /
+           node_filesystem_size_bytes{mountpoint="/var/lib/postgresql"}) < 0.15
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL disk space below 15% ({{ $value | humanizePercentage }} free)"
+
+      - alert: PostgresLongRunningQuery
+        expr: pg_stat_activity_max_tx_duration > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL long-running query detected ({{ $value | humanizeDuration }})"
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  - name: iliagpt.redis
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis is down"
+
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage {{ $value | humanizePercentage }}"
+
+      - alert: RedisKeyEvictions
+        expr: rate(redis_evicted_keys_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis evicting {{ $value | printf \"%.0f\" }} keys/second"
+
+      - alert: RedisHighBlockedClients
+        expr: redis_blocked_clients > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis has {{ $value }} blocked clients"
+
+  # ── Kubernetes / infrastructure ───────────────────────────────────────────────
+  - name: iliagpt.kubernetes
+    rules:
+      - alert: HPAMaxReplicasReached
+        expr: |
+          kube_horizontalpodautoscaler_status_current_replicas{namespace="iliagpt"}
+          >= kube_horizontalpodautoscaler_spec_max_replicas{namespace="iliagpt"}
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HPA {{ $labels.horizontalpodautoscaler }} at max replicas ({{ $value }})"
+
+      - alert: PodCPUThrottled
+        expr: |
+          rate(container_cpu_cfs_throttled_seconds_total{namespace="iliagpt"}[5m])
+          / rate(container_cpu_cfs_periods_total{namespace="iliagpt"}[5m]) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.container }} CPU throttled {{ $value | humanizePercentage }}"
+
+      - alert: PodOOMKilled
+        expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace="iliagpt"} == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pod {{ $labels.pod }} container {{ $labels.container }} OOMKilled"
+
+      - alert: PersistentVolumeAlmostFull
+        expr: |
+          kubelet_volume_stats_available_bytes{namespace="iliagpt"}
+          / kubelet_volume_stats_capacity_bytes{namespace="iliagpt"} < 0.10
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PV {{ $labels.persistentvolumeclaim }} only {{ $value | humanizePercentage }} free"
+
+  # ── Agents / task queue ───────────────────────────────────────────────────────
+  - name: iliagpt.agents
+    rules:
+      - alert: AgentLoopStuck
+        expr: agent_loop_duration_seconds > 300
+        for: 1m
+        labels:
+          severity: critical
+          team: ai
+        annotations:
+          summary: "Agent {{ $labels.agent_id }} loop stuck for {{ $value | humanizeDuration }}"
+
+      - alert: HighAgentFailureRate
+        expr: |
+          rate(agent_runs_total{status="failed"}[10m])
+          / rate(agent_runs_total[10m]) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent failure rate {{ $value | humanizePercentage }} over last 10 minutes"
+
+      - alert: TaskQueueDepthHigh
+        expr: task_queue_depth > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task queue depth {{ $value }} — possible backlog"

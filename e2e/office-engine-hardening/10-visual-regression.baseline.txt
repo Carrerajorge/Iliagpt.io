@@ -1,0 +1,5 @@
+Documento simple de prueba
+
+adiós visual-regression-baseline mundo
+
+segunda línea con más texto

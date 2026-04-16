@@ -1,0 +1,439 @@
+/* Document Editor Styles */
+
+/* Template: Emily Anderson */
+.template-emily {
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #374151;
+  line-height: 1.6;
+}
+
+.template-emily h1 {
+  font-family: 'Georgia', serif;
+  font-size: 3rem;
+  font-weight: 700;
+  font-style: italic;
+  color: #0d9488;
+  margin-bottom: 1.5rem;
+  line-height: 1.2;
+}
+
+.template-emily h2 {
+  font-family: 'Inter', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #0d9488;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  border-bottom: none;
+}
+
+.template-emily h3 {
+  font-family: 'Inter', sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1f2937;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.template-emily p {
+  font-size: 0.875rem;
+  margin-bottom: 0.75rem;
+  color: #4b5563;
+}
+
+.template-emily ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.template-emily ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.template-emily li {
+  font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+  color: #4b5563;
+}
+
+.template-emily blockquote {
+  border-left: 3px solid #0d9488;
+  padding-left: 1rem;
+  margin: 1rem 0;
+  font-style: italic;
+  color: #6b7280;
+}
+
+.template-emily strong {
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.template-emily em {
+  font-style: italic;
+}
+
+.template-emily a {
+  color: #0d9488;
+  text-decoration: underline;
+}
+
+.template-emily hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 1.5rem 0;
+}
+
+.template-emily table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.template-emily th,
+.template-emily td {
+  border: 1px solid #e5e7eb;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-size: 0.875rem;
+}
+
+.template-emily th {
+  background-color: #f9fafb;
+  font-weight: 600;
+}
+
+/* Page A4 styling */
+.page-container {
+  width: 794px;
+  min-height: 1123px;
+  background: #f7f4ef;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  padding: 70px 80px;
+  margin: 24px auto;
+}
+
+.page-container .ProseMirror {
+  outline: none;
+  min-height: 100%;
+}
+
+/* Canvas area background */
+.canvas-area {
+  background: linear-gradient(135deg, #e5e5e5 0%, #d4d4d4 100%);
+  overflow-y: auto;
+  flex: 1;
+  padding: 0;
+}
+
+.dark .canvas-area {
+  background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+}
+
+.dark .page-container {
+  background: #1f2937;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.page-container .ProseMirror p.is-editor-empty:first-child::before {
+  color: #9ca3af;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* Selection styling */
+.page-container .ProseMirror ::selection {
+  background: rgba(13, 148, 136, 0.2);
+}
+
+/* Focus styling for editable elements */
+.page-container .ProseMirror:focus-visible {
+  outline: none;
+}
+
+/* Cursor styling */
+.page-container .ProseMirror .ProseMirror-cursor {
+  border-left: 2px solid #0d9488;
+}
+
+/* Two column layout support */
+.template-emily .two-columns {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr;
+  gap: 2rem;
+  margin-top: 1.5rem;
+}
+
+.template-emily .column-left,
+.template-emily .column-right {
+  min-width: 0;
+}
+
+/* Sidebar styling */
+.document-editor-container .sidebar {
+  background: linear-gradient(180deg, #fafafa 0%, #f5f5f5 100%);
+}
+
+.document-editor-container .sidebar h2 {
+  color: #1f2937;
+}
+
+/* Canvas area background */
+.document-editor-container .canvas-area {
+  background: linear-gradient(135deg, #e5e5e5 0%, #d4d4d4 100%);
+}
+
+/* Dark mode adjustments */
+.dark .template-emily {
+  color: #e5e7eb;
+}
+
+.dark .template-emily h1,
+.dark .template-emily h2 {
+  color: #5eead4;
+}
+
+.dark .template-emily h3 {
+  color: #f3f4f6;
+}
+
+.dark .template-emily p,
+.dark .template-emily li {
+  color: #d1d5db;
+}
+
+.dark .template-emily blockquote {
+  border-left-color: #5eead4;
+  color: #9ca3af;
+}
+
+.dark .template-emily strong {
+  color: #f9fafb;
+}
+
+.dark .page-container {
+  background: #1f2937 !important;
+}
+
+.dark .document-editor-container .sidebar {
+  background: linear-gradient(180deg, #1f2937 0%, #111827 100%);
+}
+
+.dark .document-editor-container .canvas-area {
+  background: linear-gradient(135deg, #111827 0%, #0f172a 100%);
+}
+
+/* Toolbar active states */
+.toolbar button.active,
+.toolbar button[data-active="true"] {
+  background-color: #e5e7eb;
+}
+
+.dark .toolbar button.active,
+.dark .toolbar button[data-active="true"] {
+  background-color: #374151;
+}
+
+/* Animation for AI Rewrite panel */
+@keyframes slideInFromBottom {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ai-rewrite-panel {
+  animation: slideInFromBottom 0.2s ease-out;
+}
+
+/* ========================================
+   SPREADSHEET EDITOR STYLES
+======================================== */
+
+.spreadsheet-editor {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.spreadsheet-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+/* Corner cell (top-left) */
+.spreadsheet-corner-cell {
+  width: 50px;
+  min-width: 50px;
+  height: 28px;
+  background: #f8f8f8;
+  border: 1px solid #e0e0e0;
+  position: sticky;
+  left: 0;
+  z-index: 20;
+}
+
+.dark .spreadsheet-corner-cell {
+  background: #1a1a1a;
+  border-color: #333;
+}
+
+/* Column headers (A, B, C...) */
+.spreadsheet-col-header {
+  width: 100px;
+  min-width: 100px;
+  height: 28px;
+  background: #f8f8f8;
+  border: 1px solid #e0e0e0;
+  font-weight: 500;
+  font-size: 12px;
+  color: #666;
+  text-align: center;
+  user-select: none;
+}
+
+.dark .spreadsheet-col-header {
+  background: #1a1a1a;
+  border-color: #333;
+  color: #888;
+}
+
+/* Row headers (1, 2, 3...) */
+.spreadsheet-row-header {
+  width: 50px;
+  min-width: 50px;
+  height: 24px;
+  background: #f8f8f8;
+  border: 1px solid #e0e0e0;
+  font-weight: 500;
+  font-size: 12px;
+  color: #666;
+  text-align: center;
+  user-select: none;
+  position: sticky;
+  left: 0;
+  z-index: 10;
+}
+
+.dark .spreadsheet-row-header {
+  background: #1a1a1a;
+  border-color: #333;
+  color: #888;
+}
+
+/* Data cells */
+.spreadsheet-cell {
+  width: 100px;
+  min-width: 100px;
+  height: 24px;
+  border: 1px solid #e0e0e0;
+  padding: 0;
+  background: #fff;
+  cursor: cell;
+  position: relative;
+  overflow: hidden;
+}
+
+.dark .spreadsheet-cell {
+  background: #0a0a0a;
+  border-color: #333;
+}
+
+.spreadsheet-cell:hover {
+  background: #f5f5f5;
+}
+
+.dark .spreadsheet-cell:hover {
+  background: #151515;
+}
+
+/* Selected cell */
+.spreadsheet-cell-selected {
+  outline: 2px solid #000 !important;
+  outline-offset: -1px;
+  z-index: 5;
+}
+
+.dark .spreadsheet-cell-selected {
+  outline-color: #fff !important;
+}
+
+/* Cell content */
+.spreadsheet-cell-content {
+  display: block;
+  padding: 2px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 100%;
+  line-height: 20px;
+}
+
+/* Cell input (editing mode) */
+.spreadsheet-cell-input {
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  padding: 2px 6px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.dark .spreadsheet-cell-input {
+  background: #0a0a0a;
+  color: #fff;
+}
+
+/* Spreadsheet scrollbar */
+.spreadsheet-editor ::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.spreadsheet-editor ::-webkit-scrollbar-track {
+  background: #f0f0f0;
+}
+
+.dark .spreadsheet-editor ::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+.spreadsheet-editor ::-webkit-scrollbar-thumb {
+  background: #c0c0c0;
+  border-radius: 6px;
+  border: 3px solid #f0f0f0;
+}
+
+.dark .spreadsheet-editor ::-webkit-scrollbar-thumb {
+  background: #444;
+  border-color: #1a1a1a;
+}
+
+.spreadsheet-editor ::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
+
+.dark .spreadsheet-editor ::-webkit-scrollbar-thumb:hover {
+  background: #666;
+}
+
+/* Selection highlight for multiple cells */
+.spreadsheet-cell-in-range {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.dark .spreadsheet-cell-in-range {
+  background: rgba(255, 255, 255, 0.05);
+}

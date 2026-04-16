@@ -1,0 +1,61 @@
+======================================================================
+SOAK TEST - Web Retrieval System
+======================================================================
+
+Configuration:
+  Concurrency: 50
+  Duration: 30 seconds
+  Success Rate Threshold: 95%
+  Mode: REALISTIC (simulated network latencies)
+
+[5.0s] Requests: 87 | Success: 100.00% | Active: 50 | Heap: 9.6MB
+[10.0s] Requests: 184 | Success: 97.83% | Active: 50 | Heap: 11.9MB
+[15.0s] Requests: 287 | Success: 97.56% | Active: 50 | Heap: 12.1MB
+[20.0s] Requests: 393 | Success: 97.71% | Active: 50 | Heap: 12.0MB
+[25.0s] Requests: 490 | Success: 97.96% | Active: 50 | Heap: 9.3MB
+[30.0s] Requests: 593 | Success: 97.47% | Active: 50 | Heap: 14.7MB
+
+======================================================================
+SOAK TEST RESULTS
+======================================================================
+
+Request Statistics:
+  Total Requests:      643
+  Successful:          626
+  Failed:              17
+  Success Rate:        97.36%
+  Requests/Second:     18.61
+  Duration:            34.55s
+
+Latency Statistics:
+  Min:                 415.94ms
+  Max:                 6809.70ms
+  Avg:                 2446.79ms
+  P50:                 2119.94ms
+  P95:                 5648.28ms
+  P99:                 6496.10ms
+
+Memory Statistics:
+  Peak Heap Used:      14.76MB
+  Memory Growth:       0.01MB
+  Final Heap Used:     8.38MB
+  Final RSS:           76.77MB
+
+Error Types:
+  timeout              6 (0.93%)
+  rate_limit           4 (0.62%)
+  memory               4 (0.62%)
+  network              3 (0.47%)
+
+Phase Latency Breakdown (P50/P95/Avg):
+  plan         P50: 0.1ms  P95: 0.2ms  Avg: 0.1ms
+  search       P50: 491.3ms  P95: 769.9ms  Avg: 494.9ms
+  fetch        P50: 605.4ms  P95: 1876.9ms  Avg: 737.6ms
+  browser      P50: 0.0ms  P95: 4969.9ms  Avg: 1037.5ms
+  extract      P50: 178.7ms  P95: 291.4ms  Avg: 176.5ms
+  filter       P50: 0.1ms  P95: 0.5ms  Avg: 0.2ms
+
+======================================================================
+RESULT: ✓ PASS
+  Success Rate: 97.36% (threshold: 95%)
+======================================================================

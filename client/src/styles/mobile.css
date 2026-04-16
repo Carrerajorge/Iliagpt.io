@@ -1,0 +1,598 @@
+/* ========================================
+   iPhone / Mobile Optimizations
+   iPhone 17 Pro Max: ~430px width
+   iPhone 17 Pro: ~393px width
+   iPhone 17: ~390px width
+======================================== */
+
+/* Base mobile styles */
+@media screen and (max-width: 480px) {
+
+  /* Improve touch targets - minimum 44px for iOS */
+  button,
+  [role="button"],
+  a,
+  input[type="submit"],
+  input[type="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Optimize font sizes for mobile readability */
+  html {
+    font-size: 16px;
+    /* Prevent zoom on input focus */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
+
+  /* Prevent horizontal scroll */
+  .prose pre {
+    max-width: calc(100vw - 2rem);
+    overflow-x: auto;
+  }
+
+  /* Optimize message bubbles for mobile */
+  .liquid-message-user,
+  .liquid-message-ai,
+  .liquid-message-ai-light {
+    max-width: 90%;
+    padding: 12px 16px;
+  }
+
+  /* Larger touch-friendly buttons */
+  .liquid-btn {
+    padding: 14px 20px;
+    font-size: 16px;
+  }
+
+  /* Optimize input fields for mobile */
+  .liquid-input,
+  .liquid-input-light {
+    font-size: 16px;
+    /* Prevents zoom on iOS */
+    padding: 14px 16px;
+  }
+
+  /* Floating label adjustments for mobile */
+  .floating-label input {
+    font-size: 16px;
+    padding: 14px 16px;
+    padding-left: 2.75rem;
+  }
+
+  /* Card spacing for mobile */
+  .glass-card,
+  .glass-card-light {
+    border-radius: 12px;
+    padding: 16px;
+  }
+
+  /* Safe area insets for iPhone notch/Dynamic Island */
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top, 0);
+  }
+
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
+  .safe-area-left {
+    padding-left: env(safe-area-inset-left, 0);
+  }
+
+  .safe-area-right {
+    padding-right: env(safe-area-inset-right, 0);
+  }
+}
+
+/* iPhone Pro Max and larger phones (430px) */
+@media screen and (min-width: 414px) and (max-width: 480px) {
+  .prose {
+    font-size: 16px;
+    line-height: 1.6;
+  }
+}
+
+/* iPhone Pro and standard sizes (390-393px) */
+@media screen and (max-width: 413px) {
+  .prose {
+    font-size: 15px;
+    line-height: 1.55;
+  }
+
+  /* Compact spacing for smaller screens */
+  .glass-card,
+  .glass-card-light {
+    padding: 12px;
+  }
+}
+
+/* iPhone SE and smaller (375px and below) */
+@media screen and (max-width: 375px) {
+  .prose {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .liquid-message-user,
+  .liquid-message-ai,
+  .liquid-message-ai-light {
+    padding: 10px 14px;
+  }
+}
+
+/* Landscape orientation on mobile */
+@media screen and (max-height: 500px) and (orientation: landscape) {
+  .safe-area-top {
+    padding-top: 0;
+  }
+}
+
+/* iOS-specific fixes */
+@supports (-webkit-touch-callout: none) {
+
+  /* Fix for iOS rubber-banding */
+  body {
+    overscroll-behavior: none;
+  }
+
+  /* Smoother scrolling on iOS */
+  .liquid-scroll {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Fix position:fixed issues on iOS */
+  .fixed-bottom {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+}
+
+/* High contrast for visibility on OLED screens */
+@media (prefers-contrast: high) {
+  .dark {
+    --border: 0 0% 30%;
+  }
+}
+
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+
+  .liquid-button,
+  .liquid-hover,
+  .thinking-wave,
+  .thinking-cursor,
+  .typing-cursor {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ========================================
+   MOBILE SIDEBAR IMPROVEMENTS (Phase 4.1)
+======================================== */
+
+/* Mobile sidebar overlay */
+.mobile-sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.mobile-sidebar-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Mobile sidebar slide animation */
+.mobile-sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 85%;
+  max-width: 320px;
+  background: hsl(var(--sidebar));
+  z-index: 50;
+  transform: translateX(-100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.2);
+}
+
+.mobile-sidebar.open {
+  transform: translateX(0);
+}
+
+/* Swipe handle for sidebar */
+.sidebar-swipe-handle {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 100%;
+  z-index: 39;
+  touch-action: pan-x;
+}
+
+/* ========================================
+   MOBILE CHAT INPUT (Phase 4.2)
+======================================== */
+
+@media screen and (max-width: 480px) {
+
+  /* Chat input container */
+  .chat-input-container {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 12px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    background: hsl(var(--background));
+    border-top: 1px solid hsl(var(--border));
+    z-index: 30;
+  }
+
+  /* Make input taller on mobile */
+  .chat-input-container textarea {
+    min-height: 44px;
+    max-height: 120px;
+    font-size: 16px;
+    /* Prevent zoom */
+    padding: 12px 48px 12px 16px;
+    border-radius: 22px;
+  }
+
+  /* Send button on mobile */
+  .chat-input-container .send-button {
+    position: absolute;
+    right: 20px;
+    bottom: calc(max(12px, env(safe-area-inset-bottom)) + 8px);
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Add padding to message list for fixed input */
+  .messages-container {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom));
+  }
+}
+
+/* ========================================
+   TOUCH GESTURES (Phase 4.3)
+======================================== */
+
+/* Pull to refresh container */
+.pull-to-refresh {
+  position: relative;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pull-to-refresh-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--muted));
+  transition: height 0.2s ease;
+}
+
+.pull-to-refresh-indicator.active {
+  height: 60px;
+}
+
+.pull-to-refresh-indicator .spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid hsl(var(--muted-foreground));
+  border-top-color: hsl(var(--primary));
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Swipe to delete/archive */
+.swipeable-item {
+  position: relative;
+  overflow: hidden;
+  touch-action: pan-x;
+}
+
+.swipeable-item-content {
+  position: relative;
+  z-index: 2;
+  background: hsl(var(--background));
+  transition: transform 0.2s ease;
+}
+
+.swipeable-item-action {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.swipeable-item-action.delete {
+  right: 0;
+  background: hsl(0 70% 50%);
+  color: white;
+}
+
+.swipeable-item-action.archive {
+  right: 0;
+  background: hsl(220 70% 50%);
+  color: white;
+}
+
+/* ========================================
+   MOBILE NAVIGATION
+======================================== */
+
+/* Bottom navigation bar */
+.mobile-bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: calc(56px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  background: hsl(var(--background));
+  border-top: 1px solid hsl(var(--border));
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  z-index: 30;
+}
+
+.mobile-bottom-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  color: hsl(var(--muted-foreground));
+  transition: color 0.2s ease;
+}
+
+.mobile-bottom-nav-item.active {
+  color: hsl(var(--primary));
+}
+
+.mobile-bottom-nav-item span {
+  font-size: 10px;
+}
+
+/* Floating action button (FAB) */
+.fab {
+  position: fixed;
+  bottom: calc(72px + env(safe-area-inset-bottom));
+  right: 16px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--gradient-primary, hsl(var(--primary)));
+  color: hsl(var(--primary-foreground));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  z-index: 25;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.fab:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
+
+.fab:active {
+  transform: scale(0.95);
+}
+
+/* ========================================
+   TABLET OPTIMIZATIONS (768px - 1024px)
+======================================== */
+
+@media screen and (min-width: 481px) and (max-width: 1024px) {
+  /* Tablet-specific sidebar behavior */
+  .mobile-sidebar {
+    max-width: 380px;
+  }
+
+  /* Larger touch targets but not as large as phone */
+  button,
+  [role="button"],
+  a {
+    min-height: 40px;
+  }
+
+  /* Better use of horizontal space */
+  .prose {
+    max-width: 100%;
+    font-size: 16px;
+    line-height: 1.65;
+  }
+
+  /* Tablet chat layout */
+  .chat-input-container {
+    max-width: 90%;
+    margin: 0 auto;
+  }
+}
+
+/* ========================================
+   GLOBAL BROWSER COMPATIBILITY
+======================================== */
+
+/* Fallback for browsers without CSS variables support */
+@supports not (--custom: property) {
+  :root {
+    background-color: #0a0a0a;
+    color: #fafafa;
+  }
+}
+
+/* Smooth scrolling with fallback */
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Cross-browser scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* ========================================
+   RTL SUPPORT (Arabic, Hebrew, etc.)
+======================================== */
+
+[dir="rtl"] {
+  text-align: right;
+}
+
+[dir="rtl"] .mobile-sidebar {
+  left: auto;
+  right: 0;
+  transform: translateX(100%);
+}
+
+[dir="rtl"] .mobile-sidebar.open {
+  transform: translateX(0);
+}
+
+[dir="rtl"] .sidebar-swipe-handle {
+  left: auto;
+  right: 0;
+}
+
+[dir="rtl"] .fab {
+  right: auto;
+  left: 16px;
+}
+
+/* ========================================
+   PRINT STYLES
+======================================== */
+
+@media print {
+  .mobile-sidebar,
+  .mobile-bottom-nav,
+  .fab,
+  .chat-input-container,
+  .sidebar-swipe-handle {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .prose {
+    max-width: 100% !important;
+  }
+}
+
+/* ========================================
+   DARK MODE SPECIFIC MOBILE FIXES
+======================================== */
+
+.dark .mobile-sidebar {
+  box-shadow: 4px 0 30px rgba(0, 0, 0, 0.5);
+}
+
+.dark .mobile-sidebar-overlay.active {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+/* ========================================
+   INTERNATIONAL FONT SUPPORT
+======================================== */
+
+/* CJK (Chinese, Japanese, Korean) */
+:lang(zh),
+:lang(ja),
+:lang(ko) {
+  font-family: 'Geist', 'Inter', 'Noto Sans CJK SC', 'Noto Sans CJK JP', 'Noto Sans CJK KR', sans-serif;
+  line-height: 1.8;
+}
+
+/* Arabic */
+:lang(ar) {
+  font-family: 'Geist', 'Inter', 'Noto Sans Arabic', 'Tahoma', sans-serif;
+  direction: rtl;
+}
+
+/* Hebrew */
+:lang(he) {
+  font-family: 'Geist', 'Inter', 'Noto Sans Hebrew', 'Arial Hebrew', sans-serif;
+  direction: rtl;
+}
+
+/* Cyrillic (Russian, etc.) */
+:lang(ru),
+:lang(uk),
+:lang(bg) {
+  font-family: 'Geist', 'Inter', 'Noto Sans', sans-serif;
+}
+
+/* Thai */
+:lang(th) {
+  font-family: 'Geist', 'Inter', 'Noto Sans Thai', 'Tahoma', sans-serif;
+  line-height: 1.8;
+}

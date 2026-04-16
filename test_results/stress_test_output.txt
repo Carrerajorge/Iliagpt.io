@@ -1,0 +1,57 @@
+
+> rest-express@1.0.0 test:run
+> vitest run server/__tests__/stressTest.test.ts
+
+
+[1m[46m RUN [49m[22m [36mv4.0.16 [39m[90m/home/runner/workspace[39m
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould have the large fixture file available
+[22m[39mTotal elapsed time: 16ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould parse 10k row Excel file within timeout
+[22m[39mParse time for 10000 rows: 559ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould parse 10k row Excel file within timeout
+[22m[39mTotal elapsed time: 578ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould correctly count rows in SalesData sheet
+[22m[39mTotal elapsed time: 970ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould correctly read column headers
+[22m[39mTotal elapsed time: 1354ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould support virtualized row access (random access pattern)
+[22m[39mTotal elapsed time: 1697ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould extract preview data (first N rows) efficiently
+[22m[39mPreview extraction time (100 rows): 386ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould extract preview data (first N rows) efficiently
+[22m[39mTotal elapsed time: 2086ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould simulate polling progress updates correctly
+[22m[39mTotal elapsed time: 2108ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould handle memory efficiently for large datasets
+[22m[39mMemory usage for 10000 rows: 41.59 MB
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould handle memory efficiently for large datasets
+[22m[39mTotal elapsed time: 2466ms
+
+[90mstdout[2m | server/__tests__/stressTest.test.ts[2m > [22m[2mStress Test - Large Excel File Processing[2m > [22m[2mshould generate correct summary metrics format
+[22m[39mTotal elapsed time: 2829ms
+
+ [32m✓[39m server/__tests__/stressTest.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 2817[2mms[22m[39m
+     [33m[2m✓[22m[39m should parse 10k row Excel file within timeout [33m 561[2mms[22m[39m
+     [33m[2m✓[22m[39m should correctly count rows in SalesData sheet [33m 392[2mms[22m[39m
+     [33m[2m✓[22m[39m should correctly read column headers [33m 384[2mms[22m[39m
+     [33m[2m✓[22m[39m should support virtualized row access (random access pattern) [33m 343[2mms[22m[39m
+     [33m[2m✓[22m[39m should extract preview data (first N rows) efficiently [33m 389[2mms[22m[39m
+     [33m[2m✓[22m[39m should handle memory efficiently for large datasets [33m 358[2mms[22m[39m
+     [33m[2m✓[22m[39m should generate correct summary metrics format [33m 362[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m9 passed[39m[22m[90m (9)[39m
+[2m   Start at [22m 02:37:36
+[2m   Duration [22m 3.83s[2m (transform 56ms, setup 0ms, import 554ms, tests 2.82s, environment 0ms)[22m
+

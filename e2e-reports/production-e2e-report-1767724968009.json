@@ -1,0 +1,128 @@
+{
+  "timestamp": "2026-01-06T18:42:48.008Z",
+  "totalTests": 10,
+  "passed": 10,
+  "failed": 0,
+  "tests": [
+    {
+      "name": "image_generation",
+      "success": true,
+      "durationMs": 86,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/image_crea_una_imagen_de_un_gato_1767724965865.png"
+      ],
+      "events": [
+        "run_initiated: 24a12253-6907-4b0a-98a5-f4df93f4c54b",
+        "run_status: completed",
+        "artifact_validated: PNG"
+      ]
+    },
+    {
+      "name": "slides_generation",
+      "success": true,
+      "durationMs": 511,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/slides_crea_una_presentaci_n_sobre_in_1767724965906.pptx"
+      ],
+      "events": [
+        "run_initiated: f4d5489d-8bc9-49ec-a1ad-bf846b4ee088",
+        "run_status: completed",
+        "artifact_validated: PPTX"
+      ]
+    },
+    {
+      "name": "docx_generation",
+      "success": true,
+      "durationMs": 529,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/document_genera_un_documento_word_sobre_1767724966418.docx"
+      ],
+      "events": [
+        "run_initiated: 88d42081-427b-4333-bba6-3ec6071d1ea3",
+        "run_status: completed",
+        "artifact_validated: DOCX"
+      ]
+    },
+    {
+      "name": "xlsx_generation",
+      "success": true,
+      "durationMs": 517,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/spreadsheet_crea_un_excel_con_datos_de_ven_1767724966948.xlsx"
+      ],
+      "events": [
+        "run_initiated: 94d9a895-7f07-4e3d-b009-228f173d51fe",
+        "run_status: completed",
+        "artifact_validated: XLSX"
+      ]
+    },
+    {
+      "name": "pdf_generation",
+      "success": true,
+      "durationMs": 7,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/pdf_genera_un_pdf_con_el_resumen_d_1767724967466.pdf"
+      ],
+      "events": [
+        "run_initiated: aae7e21f-e7d0-401a-b993-41e19eb876ee",
+        "run_status: completed",
+        "artifact_validated: PDF"
+      ]
+    },
+    {
+      "name": "planning_validator",
+      "success": true,
+      "durationMs": 2,
+      "artifacts": [],
+      "events": [
+        "intent_classified: image_generate",
+        "is_generation: true"
+      ]
+    },
+    {
+      "name": "run_completed_event",
+      "success": true,
+      "durationMs": 510,
+      "artifacts": [],
+      "events": [
+        "run_initiated: 42abc662-73aa-452e-9622-2babc3a90f24",
+        "run_status: completed",
+        "completedAt: 2026-01-06T18:42:47.591Z"
+      ]
+    },
+    {
+      "name": "no_infinite_loading",
+      "success": true,
+      "durationMs": 5,
+      "artifacts": [],
+      "events": [
+        "run_initiated: ca9d64c1-c991-4bed-89ff-770dc09bc498",
+        "run_terminated: completed",
+        "duration: 5ms"
+      ]
+    },
+    {
+      "name": "artifact_download",
+      "success": true,
+      "durationMs": 11,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/pdf_genera_un_pdf_de_prueba_1767724967995.pdf"
+      ],
+      "events": [
+        "download_status: 200",
+        "content-type: application/pdf"
+      ]
+    },
+    {
+      "name": "web_search_not_final",
+      "success": true,
+      "durationMs": 3,
+      "artifacts": [],
+      "events": [
+        "intent: image_generate",
+        "web_search_not_used_as_final: true"
+      ]
+    }
+  ],
+  "exitCode": 0
+}

@@ -1,0 +1,5 @@
+export {
+  isSearxngAvailable,
+  registerSearxngProvider,
+  searxngSearch,
+} from '../v2026_4_1/searxngSearch';

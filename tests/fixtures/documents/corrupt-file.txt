@@ -1,0 +1,2 @@
+This file simulates a corrupt document.
+The content below contains binary garbage that might trip up parsers:

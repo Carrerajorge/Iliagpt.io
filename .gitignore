@@ -1,0 +1,65 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+
+# Claude Code / Claire worktrees (full repo copies, never commit)
+.claude/worktrees/
+.claire/worktrees/
+
+# User document uploads and temp files — never track
+Downloads/
+uploads/
+~$*
+
+# OCR training data (binary blobs)
+*.traineddata
+
+# =============================================================================
+# SECURITY: Aggressive patterns to prevent secret leaks
+# =============================================================================
+
+# Replit / sandbox / estado (may contain environment dumps)
+sandbox_workspace/
+attached_assets/
+**/.state/
+sandbox_workspace/.state/
+**/session*.json
+**/secrets*.json
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.*.local
+
+# Keys and certificates
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Common secret/credential patterns
+**/credentials*.json
+**/service-account*.json
+**/*secret*.json
+**/*token*.json
+
+# Dumps de sesión/secretos
+**/*session*.json
+**/*secrets*.json
+
+# Compiled Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+artifacts/
+.eslintcache
+cowork_test_suite/tests_capacidades/reports/
+cowork_test_suite/tests_capacidades/artifacts/
+cowork_test_suite/tests_capacidades/CAPABILITY_REPORT.txt
+cowork_test_suite/tests_capacidades/capability_results.json

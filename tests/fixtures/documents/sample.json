@@ -1,0 +1,19 @@
+{
+  "company": "Test Corp",
+  "employees": [
+    {
+      "id": 1,
+      "name": "John Smith",
+      "role": "Developer"
+    },
+    {
+      "id": 2,
+      "name": "Jane Doe",
+      "role": "Designer"
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "lastUpdated": "2026-01-09"
+  }
+}

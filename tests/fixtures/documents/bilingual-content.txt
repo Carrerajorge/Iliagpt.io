@@ -1,0 +1,13 @@
+Este es un documento bilingüe / This is a bilingual document.
+
+SECCIÓN EN ESPAÑOL:
+El sistema PARE procesa documentos en múltiples idiomas.
+Las citas deben incluir referencias precisas al documento fuente.
+Información importante: El procesamiento es determinístico.
+
+ENGLISH SECTION:
+The PARE system processes documents in multiple languages.
+Citations must include precise references to the source document.
+Important information: Processing is deterministic.
+
+混合语言测试 / Mixed language test.

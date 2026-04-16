@@ -1,0 +1,127 @@
+export type SuperAgentSection =
+  | "TERMINAL Y SISTEMA (1-10)"
+  | "ARCHIVOS (11-20)"
+  | "CORREO ELECTRÓNICO (21-30)"
+  | "WHATSAPP Y MENSAJERÍA (31-40)"
+  | "CALENDARIO (41-50)"
+  | "NAVEGACIÓN WEB (51-60)"
+  | "INVESTIGACIÓN (61-70)"
+  | "PROGRAMACIÓN Y CÓDIGO (71-80)"
+  | "DATOS Y ANÁLISIS (81-90)"
+  | "MEMORIA Y APRENDIZAJE (91-100)";
+
+export interface SuperAgentCapability {
+  id: number;
+  section: SuperAgentSection;
+  title: string;
+  tags: string[];
+}
+
+export const SUPER_AGENT_METADATA = {
+  source: "super_agente_digital_100.docx",
+  date: "2026-02",
+  total: 100,
+} as const;
+
+export const SUPER_AGENT_CAPABILITIES: SuperAgentCapability[] = [
+  { id: 1, section: "TERMINAL Y SISTEMA (1-10)", title: "Ejecutar comandos bash/powershell", tags: ["ejecutar", "comandos", "bash", "powershell"] },
+  { id: 2, section: "TERMINAL Y SISTEMA (1-10)", title: "Instalar y desinstalar software", tags: ["instalar", "desinstalar", "software"] },
+  { id: 3, section: "TERMINAL Y SISTEMA (1-10)", title: "Monitorear CPU, RAM y disco en tiempo real", tags: ["monitorear", "cpu", "ram", "disco", "tiempo", "real"] },
+  { id: 4, section: "TERMINAL Y SISTEMA (1-10)", title: "Matar procesos que no responden", tags: ["matar", "procesos", "responden"] },
+  { id: 5, section: "TERMINAL Y SISTEMA (1-10)", title: "Programar tareas con cron/scheduler", tags: ["programar", "tareas", "cron", "scheduler"] },
+  { id: 6, section: "TERMINAL Y SISTEMA (1-10)", title: "Gestionar servicios del sistema", tags: ["gestionar", "servicios", "sistema"] },
+  { id: 7, section: "TERMINAL Y SISTEMA (1-10)", title: "Crear y gestionar usuarios del sistema", tags: ["crear", "gestionar", "usuarios", "sistema"] },
+  { id: 8, section: "TERMINAL Y SISTEMA (1-10)", title: "Configurar variables de entorno", tags: ["configurar", "variables", "entorno"] },
+  { id: 9, section: "TERMINAL Y SISTEMA (1-10)", title: "Hacer backups automáticos del sistema", tags: ["hacer", "backups", "automaticos", "sistema"] },
+  { id: 10, section: "TERMINAL Y SISTEMA (1-10)", title: "Ejecutar scripts al arrancar el equipo", tags: ["ejecutar", "scripts", "arrancar", "equipo"] },
+  { id: 11, section: "ARCHIVOS (11-20)", title: "Leer cualquier archivo (PDF, DOCX, XLSX, CSV, JSON, etc.)", tags: ["leer", "cualquier", "archivo", "pdf", "docx", "xlsx", "csv", "json", "etc"] },
+  { id: 12, section: "ARCHIVOS (11-20)", title: "Crear documentos Word profesionales", tags: ["crear", "documentos", "word", "profesionales"] },
+  { id: 13, section: "ARCHIVOS (11-20)", title: "Crear presentaciones PowerPoint", tags: ["crear", "presentaciones", "powerpoint"] },
+  { id: 14, section: "ARCHIVOS (11-20)", title: "Crear hojas de cálculo Excel", tags: ["crear", "hojas", "calculo", "excel"] },
+  { id: 15, section: "ARCHIVOS (11-20)", title: "Convertir entre formatos de archivo", tags: ["convertir", "formatos", "archivo"] },
+  { id: 16, section: "ARCHIVOS (11-20)", title: "Comprimir y descomprimir archivos", tags: ["comprimir", "descomprimir", "archivos"] },
+  { id: 17, section: "ARCHIVOS (11-20)", title: "Buscar archivos por nombre o contenido", tags: ["buscar", "archivos", "nombre", "contenido"] },
+  { id: 18, section: "ARCHIVOS (11-20)", title: "Renombrar archivos masivamente", tags: ["renombrar", "archivos", "masivamente"] },
+  { id: 19, section: "ARCHIVOS (11-20)", title: "Organizar archivos en carpetas automáticamente", tags: ["organizar", "archivos", "carpetas", "automaticamente"] },
+  { id: 20, section: "ARCHIVOS (11-20)", title: "Extraer texto de imágenes (OCR)", tags: ["extraer", "texto", "imagenes", "ocr"] },
+  { id: 21, section: "CORREO ELECTRÓNICO (21-30)", title: "Leer correos nuevos y resumirlos", tags: ["leer", "correos", "nuevos", "resumirlos"] },
+  { id: 22, section: "CORREO ELECTRÓNICO (21-30)", title: "Redactar y enviar correos", tags: ["redactar", "enviar", "correos"] },
+  { id: 23, section: "CORREO ELECTRÓNICO (21-30)", title: "Responder correos automáticamente según reglas", tags: ["responder", "correos", "automaticamente", "segun", "reglas"] },
+  { id: 24, section: "CORREO ELECTRÓNICO (21-30)", title: "Clasificar correos por categoría y prioridad", tags: ["clasificar", "correos", "categoria", "prioridad"] },
+  { id: 25, section: "CORREO ELECTRÓNICO (21-30)", title: "Buscar correos antiguos por contenido", tags: ["buscar", "correos", "antiguos", "contenido"] },
+  { id: 26, section: "CORREO ELECTRÓNICO (21-30)", title: "Extraer y procesar archivos adjuntos", tags: ["extraer", "procesar", "archivos", "adjuntos"] },
+  { id: 27, section: "CORREO ELECTRÓNICO (21-30)", title: "Programar envío de correos", tags: ["programar", "envio", "correos"] },
+  { id: 28, section: "CORREO ELECTRÓNICO (21-30)", title: "Crear plantillas de correo personalizadas", tags: ["crear", "plantillas", "correo", "personalizadas"] },
+  { id: 29, section: "CORREO ELECTRÓNICO (21-30)", title: "Detectar y filtrar spam", tags: ["detectar", "filtrar", "spam"] },
+  { id: 30, section: "CORREO ELECTRÓNICO (21-30)", title: "Generar resumen diario de bandeja de entrada", tags: ["generar", "resumen", "diario", "bandeja", "entrada"] },
+  { id: 31, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Conectarse a WhatsApp Web", tags: ["conectarse", "whatsapp", "web"] },
+  { id: 32, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Leer mensajes nuevos de WhatsApp", tags: ["leer", "mensajes", "nuevos", "whatsapp"] },
+  { id: 33, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Enviar mensajes de texto por WhatsApp", tags: ["enviar", "mensajes", "texto", "whatsapp"] },
+  { id: 34, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Enviar archivos e imágenes por WhatsApp", tags: ["enviar", "archivos", "imagenes", "whatsapp"] },
+  { id: 35, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Responder automáticamente en WhatsApp según palabras clave", tags: ["responder", "automaticamente", "whatsapp", "segun", "palabras", "clave"] },
+  { id: 36, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Buscar en historial de conversaciones de WhatsApp", tags: ["buscar", "historial", "conversaciones", "whatsapp"] },
+  { id: 37, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Enviar mensajes programados por WhatsApp", tags: ["enviar", "mensajes", "programados", "whatsapp"] },
+  { id: 38, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Gestionar grupos de WhatsApp", tags: ["gestionar", "grupos", "whatsapp"] },
+  { id: 39, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Extraer información importante de chats", tags: ["extraer", "informacion", "importante", "chats"] },
+  { id: 40, section: "WHATSAPP Y MENSAJERÍA (31-40)", title: "Alertar de mensajes urgentes en WhatsApp", tags: ["alertar", "mensajes", "urgentes", "whatsapp"] },
+  { id: 41, section: "CALENDARIO (41-50)", title: "Crear eventos y reuniones en calendario", tags: ["crear", "eventos", "reuniones", "calendario"] },
+  { id: 42, section: "CALENDARIO (41-50)", title: "Modificar y cancelar eventos", tags: ["modificar", "cancelar", "eventos"] },
+  { id: 43, section: "CALENDARIO (41-50)", title: "Detectar conflictos de horario", tags: ["detectar", "conflictos", "horario"] },
+  { id: 44, section: "CALENDARIO (41-50)", title: "Enviar recordatorios antes de eventos", tags: ["enviar", "recordatorios", "antes", "eventos"] },
+  { id: 45, section: "CALENDARIO (41-50)", title: "Sugerir horarios óptimos para reuniones", tags: ["sugerir", "horarios", "optimos", "reuniones"] },
+  { id: 46, section: "CALENDARIO (41-50)", title: "Sincronizar múltiples calendarios", tags: ["sincronizar", "multiples", "calendarios"] },
+  { id: 47, section: "CALENDARIO (41-50)", title: "Crear eventos recurrentes", tags: ["crear", "eventos", "recurrentes"] },
+  { id: 48, section: "CALENDARIO (41-50)", title: "Gestionar zonas horarias en calendario", tags: ["gestionar", "zonas", "horarias", "calendario"] },
+  { id: 49, section: "CALENDARIO (41-50)", title: "Generar resumen diario de agenda", tags: ["generar", "resumen", "diario", "agenda"] },
+  { id: 50, section: "CALENDARIO (41-50)", title: "Bloquear tiempo de enfoque automáticamente", tags: ["bloquear", "tiempo", "enfoque", "automaticamente"] },
+  { id: 51, section: "NAVEGACIÓN WEB (51-60)", title: "Abrir y navegar cualquier sitio web", tags: ["abrir", "navegar", "cualquier", "sitio", "web"] },
+  { id: 52, section: "NAVEGACIÓN WEB (51-60)", title: "Llenar formularios automáticamente", tags: ["llenar", "formularios", "automaticamente"] },
+  { id: 53, section: "NAVEGACIÓN WEB (51-60)", title: "Hacer login en plataformas con autorización", tags: ["hacer", "login", "plataformas", "autorizacion"] },
+  { id: 54, section: "NAVEGACIÓN WEB (51-60)", title: "Descargar archivos de internet", tags: ["descargar", "archivos", "internet"] },
+  { id: 55, section: "NAVEGACIÓN WEB (51-60)", title: "Tomar capturas de pantalla de páginas web", tags: ["tomar", "capturas", "pantalla", "paginas", "web"] },
+  { id: 56, section: "NAVEGACIÓN WEB (51-60)", title: "Extraer datos estructurados de sitios web (scraping)", tags: ["extraer", "datos", "estructurados", "sitios", "web", "scraping"] },
+  { id: 57, section: "NAVEGACIÓN WEB (51-60)", title: "Monitorear cambios en páginas web", tags: ["monitorear", "cambios", "paginas", "web"] },
+  { id: 58, section: "NAVEGACIÓN WEB (51-60)", title: "Comparar precios de productos en tiendas", tags: ["comparar", "precios", "productos", "tiendas"] },
+  { id: 59, section: "NAVEGACIÓN WEB (51-60)", title: "Rastrear envíos y paquetes", tags: ["rastrear", "envios", "paquetes"] },
+  { id: 60, section: "NAVEGACIÓN WEB (51-60)", title: "Buscar y reservar vuelos y hoteles", tags: ["buscar", "reservar", "vuelos", "hoteles"] },
+  { id: 61, section: "INVESTIGACIÓN (61-70)", title: "Buscar información en múltiples fuentes", tags: ["buscar", "informacion", "multiples", "fuentes"] },
+  { id: 62, section: "INVESTIGACIÓN (61-70)", title: "Verificar hechos (fact-checking)", tags: ["verificar", "hechos", "fact", "checking"] },
+  { id: 63, section: "INVESTIGACIÓN (61-70)", title: "Generar reportes de investigación con citas", tags: ["generar", "reportes", "investigacion", "citas"] },
+  { id: 64, section: "INVESTIGACIÓN (61-70)", title: "Buscar papers académicos", tags: ["buscar", "papers", "academicos"] },
+  { id: 65, section: "INVESTIGACIÓN (61-70)", title: "Resumir artículos y documentos largos", tags: ["resumir", "articulos", "documentos", "largos"] },
+  { id: 66, section: "INVESTIGACIÓN (61-70)", title: "Analizar tendencias de mercado", tags: ["analizar", "tendencias", "mercado"] },
+  { id: 67, section: "INVESTIGACIÓN (61-70)", title: "Investigar competidores", tags: ["investigar", "competidores"] },
+  { id: 68, section: "INVESTIGACIÓN (61-70)", title: "Monitorear noticias por tema", tags: ["monitorear", "noticias", "tema"] },
+  { id: 69, section: "INVESTIGACIÓN (61-70)", title: "Traducir documentos e investigaciones", tags: ["traducir", "documentos", "investigaciones"] },
+  { id: 70, section: "INVESTIGACIÓN (61-70)", title: "Crear bibliografías y referencias", tags: ["crear", "bibliografias", "referencias"] },
+  { id: 71, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Escribir código en cualquier lenguaje", tags: ["escribir", "codigo", "cualquier", "lenguaje"] },
+  { id: 72, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Depurar y corregir bugs", tags: ["depurar", "corregir", "bugs"] },
+  { id: 73, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Crear APIs y microservicios", tags: ["crear", "apis", "microservicios"] },
+  { id: 74, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Diseñar bases de datos", tags: ["dise", "bases", "datos"] },
+  { id: 75, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Escribir tests automatizados", tags: ["escribir", "tests", "automatizados"] },
+  { id: 76, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Desplegar aplicaciones en la nube", tags: ["desplegar", "aplicaciones", "nube"] },
+  { id: 77, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Gestionar repositorios Git", tags: ["gestionar", "repositorios", "git"] },
+  { id: 78, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Crear scripts de automatización", tags: ["crear", "scripts", "automatizacion"] },
+  { id: 79, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Optimizar rendimiento de código", tags: ["optimizar", "rendimiento", "codigo"] },
+  { id: 80, section: "PROGRAMACIÓN Y CÓDIGO (71-80)", title: "Documentar código automáticamente", tags: ["documentar", "codigo", "automaticamente"] },
+  { id: 81, section: "DATOS Y ANÁLISIS (81-90)", title: "Limpiar y transformar datos sucios", tags: ["limpiar", "transformar", "datos", "sucios"] },
+  { id: 82, section: "DATOS Y ANÁLISIS (81-90)", title: "Análisis estadístico completo", tags: ["analisis", "estadistico", "completo"] },
+  { id: 83, section: "DATOS Y ANÁLISIS (81-90)", title: "Crear gráficos y visualizaciones", tags: ["crear", "graficos", "visualizaciones"] },
+  { id: 84, section: "DATOS Y ANÁLISIS (81-90)", title: "Generar dashboards interactivos", tags: ["generar", "dashboards", "interactivos"] },
+  { id: 85, section: "DATOS Y ANÁLISIS (81-90)", title: "Detectar patrones y anomalías", tags: ["detectar", "patrones", "anomalias"] },
+  { id: 86, section: "DATOS Y ANÁLISIS (81-90)", title: "Hacer predicciones con machine learning", tags: ["hacer", "predicciones", "machine", "learning"] },
+  { id: 87, section: "DATOS Y ANÁLISIS (81-90)", title: "Consultar y gestionar bases de datos SQL", tags: ["consultar", "gestionar", "bases", "datos", "sql"] },
+  { id: 88, section: "DATOS Y ANÁLISIS (81-90)", title: "Procesar datos en tiempo real", tags: ["procesar", "datos", "tiempo", "real"] },
+  { id: 89, section: "DATOS Y ANÁLISIS (81-90)", title: "Exportar análisis a Excel y PDF", tags: ["exportar", "analisis", "excel", "pdf"] },
+  { id: 90, section: "DATOS Y ANÁLISIS (81-90)", title: "Generar reportes automáticos periódicos", tags: ["generar", "reportes", "automaticos", "periodicos"] },
+  { id: 91, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Recordar preferencias del usuario", tags: ["recordar", "preferencias", "usuario"] },
+  { id: 92, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Mantener historial de conversaciones", tags: ["mantener", "historial", "conversaciones"] },
+  { id: 93, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Aprender el estilo de comunicación del usuario", tags: ["aprender", "estilo", "comunicacion", "usuario"] },
+  { id: 94, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Recordar proyectos en curso y su estado", tags: ["recordar", "proyectos", "curso", "estado"] },
+  { id: 95, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Almacenar contactos y relaciones importantes", tags: ["almacenar", "contactos", "relaciones", "importantes"] },
+  { id: 96, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Detectar patrones en el comportamiento del usuario", tags: ["detectar", "patrones", "comportamiento", "usuario"] },
+  { id: 97, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Sugerir automatizaciones basadas en tareas repetitivas", tags: ["sugerir", "automatizaciones", "basadas", "tareas", "repetitivas"] },
+  { id: 98, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Anticipar necesidades antes de que se pidan", tags: ["anticipar", "necesidades", "antes", "pidan"] },
+  { id: 99, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Mejorar respuestas basándose en feedback pasado", tags: ["mejorar", "respuestas", "basandose", "feedback", "pasado"] },
+  { id: 100, section: "MEMORIA Y APRENDIZAJE (91-100)", title: "Construir una base de conocimiento personal que crece con el tiempo", tags: ["construir", "base", "conocimiento", "personal", "crece", "tiempo"] },
+];

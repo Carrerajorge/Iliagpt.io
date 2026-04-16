@@ -1,0 +1,207 @@
+{
+  "config": {
+    "durationSeconds": 5,
+    "concurrency": 10,
+    "realistic": false,
+    "outputDir": "test_results"
+  },
+  "sloThresholds": {
+    "fetchP95Ms": 3000,
+    "browserP95Ms": 8000,
+    "successRatePercent": 97
+  },
+  "startTime": 1767387974714,
+  "endTime": 1767387979912,
+  "durationMs": 5198,
+  "totalRequests": 200,
+  "successfulRequests": 198,
+  "failedRequests": 2,
+  "successRate": 99,
+  "requestsPerSecond": 38.47633705271258,
+  "phasePercentiles": {
+    "fetch": {
+      "p50": 47.69198099999994,
+      "p95": 334.1768599999996,
+      "p99": 359.68381000000045,
+      "avg": 100.51646465384624
+    },
+    "browser": {
+      "p50": 216.63828200000012,
+      "p95": 501.4263169999995,
+      "p99": 586.067744,
+      "avg": 246.78038317142855
+    }
+  },
+  "errorTaxonomy": {
+    "network": 2
+  },
+  "categoryBreakdown": {
+    "financial": {
+      "total": 47,
+      "success": 45,
+      "avgLatency": 241.03302155319153
+    },
+    "academic": {
+      "total": 65,
+      "success": 65,
+      "avgLatency": 268.59575892307686
+    },
+    "news": {
+      "total": 45,
+      "success": 45,
+      "avgLatency": 268.94725759999994
+    },
+    "technical": {
+      "total": 43,
+      "success": 43,
+      "avgLatency": 247.53387809302328
+    }
+  },
+  "domainBreakdown": {
+    "marketwatch.com": {
+      "total": 10,
+      "success": 10,
+      "circuitState": "closed"
+    },
+    "scholar.google.com": {
+      "total": 18,
+      "success": 18,
+      "circuitState": "closed"
+    },
+    "nytimes.com": {
+      "total": 9,
+      "success": 9,
+      "circuitState": "closed"
+    },
+    "bbc.com": {
+      "total": 10,
+      "success": 10,
+      "circuitState": "closed"
+    },
+    "medium.com": {
+      "total": 10,
+      "success": 10,
+      "circuitState": "closed"
+    },
+    "theguardian.com": {
+      "total": 5,
+      "success": 5,
+      "circuitState": "closed"
+    },
+    "hackernews.com": {
+      "total": 11,
+      "success": 11,
+      "circuitState": "closed"
+    },
+    "cnn.com": {
+      "total": 7,
+      "success": 7,
+      "circuitState": "closed"
+    },
+    "dev.to": {
+      "total": 10,
+      "success": 10,
+      "circuitState": "closed"
+    },
+    "reuters.com": {
+      "total": 22,
+      "success": 22,
+      "circuitState": "closed"
+    },
+    "nature.com": {
+      "total": 11,
+      "success": 11,
+      "circuitState": "closed"
+    },
+    "science.org": {
+      "total": 14,
+      "success": 14,
+      "circuitState": "closed"
+    },
+    "bloomberg.com": {
+      "total": 8,
+      "success": 8,
+      "circuitState": "closed"
+    },
+    "pubmed.gov": {
+      "total": 11,
+      "success": 11,
+      "circuitState": "closed"
+    },
+    "wsj.com": {
+      "total": 12,
+      "success": 11,
+      "circuitState": "closed"
+    },
+    "stackoverflow.com": {
+      "total": 10,
+      "success": 10,
+      "circuitState": "closed"
+    },
+    "arxiv.org": {
+      "total": 11,
+      "success": 11,
+      "circuitState": "closed"
+    },
+    "github.com": {
+      "total": 2,
+      "success": 2,
+      "circuitState": "closed"
+    },
+    "finance.yahoo.com": {
+      "total": 9,
+      "success": 8,
+      "circuitState": "closed"
+    }
+  },
+  "memoryStats": {
+    "peakHeapMb": 152.57129669189453,
+    "peakRssMb": 259.2890625,
+    "heapGrowthMb": 85.28179931640625,
+    "leakDetected": true,
+    "finalFdCount": 32
+  },
+  "sloResults": {
+    "fetchP95Passed": true,
+    "browserP95Passed": true,
+    "successRatePassed": true,
+    "allPassed": true
+  },
+  "timeSeries": [
+    {
+      "timestamp": 1767387979868,
+      "elapsedSeconds": 5.154,
+      "totalRequests": 195,
+      "successRate": 98.97435897435898,
+      "fetchP95Ms": 334.1768599999996,
+      "browserP95Ms": 501.4263169999995,
+      "heapUsedMb": 106.57240295410156,
+      "rssMb": 214.65625,
+      "fdCount": 32,
+      "openCircuits": 0,
+      "activeRequests": 5,
+      "leakDetected": true
+    },
+    {
+      "timestamp": 1767387979911,
+      "elapsedSeconds": 5.197,
+      "totalRequests": 200,
+      "successRate": 99,
+      "fetchP95Ms": 334.1768599999996,
+      "browserP95Ms": 501.4263169999995,
+      "heapUsedMb": 106.57240295410156,
+      "rssMb": 214.65625,
+      "fdCount": 32,
+      "openCircuits": 0,
+      "activeRequests": 0,
+      "leakDetected": true
+    }
+  ],
+  "warnings": [
+    "[Resource Warning] Heap growing at 3708.25MB/min - potential leak",
+    "[Resource Warning] Heap growing at 432.25MB/min - potential leak",
+    "[Resource Warning] Heap growing at 2194.11MB/min - potential leak",
+    "[Resource Warning] Heap growing at 1085.47MB/min - potential leak",
+    "[Leak Detected] Leak detected: Heap growing at 1085.26MB/min (threshold: 10)"
+  ]
+}

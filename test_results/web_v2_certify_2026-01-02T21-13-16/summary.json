@@ -1,0 +1,119 @@
+{
+  "timestamp": "2026-01-02T21:13:16.297Z",
+  "config": {
+    "quick": true,
+    "outputDir": "test_results",
+    "soakDurationSeconds": 300,
+    "soakConcurrency": 10
+  },
+  "phases": [
+    {
+      "name": "unit_tests",
+      "passed": true,
+      "durationMs": 17391.429209,
+      "details": {
+        "testsPassed": 4,
+        "testsFailed": 0,
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "benchmarks",
+      "passed": true,
+      "durationMs": 7457.438383999997,
+      "details": {
+        "benchmarksPassed": 13,
+        "benchmarksFailed": 0,
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "golden_fixtures",
+      "passed": false,
+      "durationMs": 9.274927999998908,
+      "details": {
+        "totalFixtures": 10,
+        "passedCount": 5,
+        "failedCount": 5,
+        "passRate": "50.00%",
+        "failures": [
+          {
+            "query": "best practices for React hooks",
+            "expected": 0.05,
+            "actual": 0.5139285714285714,
+            "difference": 0.4639285714285714
+          },
+          {
+            "query": "how to make chocolate cake",
+            "expected": 0.82,
+            "actual": 0.9999999999999999,
+            "difference": 0.17999999999999994
+          },
+          {
+            "query": "COVID-19 vaccine effectiveness",
+            "expected": 0.88,
+            "actual": 0.9999999999999999,
+            "difference": 0.11999999999999988
+          },
+          {
+            "query": "history of the Roman Empire",
+            "expected": 0.8,
+            "actual": 0.9999999999999999,
+            "difference": 0.19999999999999984
+          },
+          {
+            "query": "Mediterranean diet benefits",
+            "expected": 0.9,
+            "actual": 0.9999999999999999,
+            "difference": 0.09999999999999987
+          }
+        ]
+      }
+    },
+    {
+      "name": "soak_test",
+      "passed": true,
+      "durationMs": 0,
+      "details": {
+        "skipped": true,
+        "reason": "--quick mode"
+      }
+    }
+  ],
+  "overallPassed": false,
+  "totalDurationMs": 24862.590507999997,
+  "sloCompliance": {
+    "passed": false,
+    "details": {
+      "thresholds": {
+        "unitTestPassRate": 100,
+        "benchmarkPassRate": 100,
+        "goldenFixturesPassRate": 95,
+        "soakSuccessRate": 95,
+        "fetchP95Ms": 3000,
+        "browserP95Ms": 8000
+      },
+      "checks": [
+        {
+          "name": "unit_test_pass_rate",
+          "passed": true,
+          "value": "100%",
+          "threshold": "100% pass rate"
+        },
+        {
+          "name": "benchmark_pass_rate",
+          "passed": true,
+          "value": "100%",
+          "threshold": "100% pass rate"
+        },
+        {
+          "name": "golden_fixtures_pass_rate",
+          "passed": false,
+          "value": "50.00%",
+          "threshold": "≥95%"
+        }
+      ],
+      "allPassed": false
+    }
+  }
+}

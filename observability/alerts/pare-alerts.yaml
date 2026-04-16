@@ -1,0 +1,459 @@
+groups:
+  - name: pare-availability
+    interval: 30s
+    rules:
+      - alert: PAREHighErrorRate
+        expr: |
+          (
+            sum(rate(pare_requests_total{status_code_class="5xx"}[5m]))
+            /
+            sum(rate(pare_requests_total[5m]))
+          ) > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE error rate exceeds 0.1%"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes, exceeding the 0.1% warning threshold."
+          runbook_url: "observability/runbooks/PAREHighErrorRate.md"
+
+      - alert: PAREHighErrorRate
+        expr: |
+          (
+            sum(rate(pare_requests_total{status_code_class="5xx"}[5m]))
+            /
+            sum(rate(pare_requests_total[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE error rate exceeds 1%"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes, exceeding the 1% critical threshold. SLO of 99.9% availability is at risk."
+          runbook_url: "observability/runbooks/PAREHighErrorRate.md"
+
+      - alert: PAREHighErrorRateBurnRate
+        expr: |
+          (
+            (
+              sum(rate(pare_requests_total{status_code_class="5xx"}[1h]))
+              /
+              sum(rate(pare_requests_total[1h]))
+            ) > (14.4 * 0.001)
+            and
+            (
+              sum(rate(pare_requests_total{status_code_class="5xx"}[5m]))
+              /
+              sum(rate(pare_requests_total[5m]))
+            ) > (14.4 * 0.001)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE error budget burn rate critical (14.4x)"
+          description: "Error budget is being consumed at 14.4x the sustainable rate. At this rate, the monthly error budget will be exhausted in 2 days."
+          runbook_url: "observability/runbooks/PAREHighErrorRate.md"
+
+      - alert: PAREHighErrorRateBurnRate
+        expr: |
+          (
+            (
+              sum(rate(pare_requests_total{status_code_class="5xx"}[6h]))
+              /
+              sum(rate(pare_requests_total[6h]))
+            ) > (6 * 0.001)
+            and
+            (
+              sum(rate(pare_requests_total{status_code_class="5xx"}[30m]))
+              /
+              sum(rate(pare_requests_total[30m]))
+            ) > (6 * 0.001)
+          )
+        for: 15m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE error budget burn rate elevated (6x)"
+          description: "Error budget is being consumed at 6x the sustainable rate. At this rate, the monthly error budget will be exhausted in 5 days."
+          runbook_url: "observability/runbooks/PAREHighErrorRate.md"
+
+      - alert: PAREServiceDown
+        expr: |
+          sum(rate(pare_requests_total{status_code_class="2xx"}[2m])) == 0
+          and
+          sum(rate(pare_requests_total[2m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE service is down - no successful requests"
+          description: "No successful (2xx) requests have been recorded in the last 2 minutes while traffic is being received. The service may be completely unavailable."
+          runbook_url: "observability/runbooks/PAREServiceDown.md"
+
+      - alert: PARENoTraffic
+        expr: |
+          sum(rate(pare_requests_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE receiving no traffic"
+          description: "No requests have been received by PARE in the last 5 minutes. This may indicate a routing issue or upstream problem."
+          runbook_url: "observability/runbooks/PAREServiceDown.md"
+
+  - name: pare-latency
+    interval: 30s
+    rules:
+      - alert: PAREHighLatency
+        expr: |
+          histogram_quantile(0.99, sum(rate(pare_request_duration_seconds_bucket[5m])) by (le)) > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE p99 latency exceeds 3 seconds"
+          description: "The 99th percentile request latency is {{ $value | humanizeDuration }}, exceeding the 3s warning threshold."
+          runbook_url: "observability/runbooks/PAREHighLatency.md"
+
+      - alert: PAREHighLatency
+        expr: |
+          histogram_quantile(0.99, sum(rate(pare_request_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE p99 latency exceeds 5 seconds - SLO breach"
+          description: "The 99th percentile request latency is {{ $value | humanizeDuration }}, exceeding the 5s SLO threshold."
+          runbook_url: "observability/runbooks/PAREHighLatency.md"
+
+      - alert: PAREHighLatencyBurnRate
+        expr: |
+          (
+            (
+              sum(rate(pare_request_duration_seconds_bucket{le="5"}[1h]))
+              /
+              sum(rate(pare_request_duration_seconds_count[1h]))
+            ) < 0.99
+          )
+          and
+          (
+            (
+              sum(rate(pare_request_duration_seconds_bucket{le="5"}[5m]))
+              /
+              sum(rate(pare_request_duration_seconds_count[5m]))
+            ) < 0.99
+          )
+        for: 2m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE latency SLO burn rate critical"
+          description: "More than 1% of requests are exceeding the 5s latency SLO over multiple time windows."
+          runbook_url: "observability/runbooks/PAREHighLatency.md"
+
+      - alert: PARESlowParsing
+        expr: |
+          histogram_quantile(0.95, sum(rate(pare_parse_duration_seconds_bucket[5m])) by (le, parser_type)) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE parsing p95 exceeds 10 seconds"
+          description: "The 95th percentile parsing duration for {{ $labels.parser_type }} parser is {{ $value | humanizeDuration }}, indicating slow document processing."
+          runbook_url: "observability/runbooks/PARESlowParsing.md"
+
+      - alert: PARESlowParsingByType
+        expr: |
+          histogram_quantile(0.95, sum(rate(pare_parse_duration_seconds_bucket[5m])) by (le, parser_type)) > 15
+        for: 5m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE {{ $labels.parser_type }} parser critically slow"
+          description: "The 95th percentile parsing duration for {{ $labels.parser_type }} is {{ $value | humanizeDuration }}. Consider scaling or investigating the parser."
+          runbook_url: "observability/runbooks/PARESlowParsing.md"
+
+  - name: pare-resources
+    interval: 30s
+    rules:
+      - alert: PAREWorkerPoolExhausted
+        expr: |
+          pare_active_workers >= 10
+        for: 30s
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE worker pool exhausted"
+          description: "All available workers ({{ $value }}) are currently active. New requests may be queued or rejected."
+          runbook_url: "observability/runbooks/PAREWorkerPoolExhausted.md"
+
+      - alert: PAREWorkerPoolHigh
+        expr: |
+          pare_active_workers >= 8
+        for: 1m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE worker pool utilization high"
+          description: "Worker pool utilization is at {{ $value }} workers. Consider scaling if load persists."
+          runbook_url: "observability/runbooks/PAREWorkerPoolExhausted.md"
+
+      - alert: PAREHighQueueDepth
+        expr: |
+          pare_queue_depth > 50
+        for: 1m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE queue depth exceeds 50"
+          description: "Processing queue depth is {{ $value }} items. This may indicate insufficient processing capacity."
+          runbook_url: "observability/runbooks/PAREHighQueueDepth.md"
+
+      - alert: PAREHighQueueDepth
+        expr: |
+          pare_queue_depth > 100
+        for: 1m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE queue depth critical - exceeds 100"
+          description: "Processing queue depth is {{ $value }} items. Requests are backing up significantly. Immediate scaling or investigation required."
+          runbook_url: "observability/runbooks/PAREHighQueueDepth.md"
+
+      - alert: PAREMemoryPressure
+        expr: |
+          (
+            process_resident_memory_bytes{job="pare"}
+            /
+            node_memory_MemTotal_bytes
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE memory usage exceeds 80%"
+          description: "PARE process memory usage is at {{ $value | printf \"%.1f\" }}% of available memory."
+          runbook_url: "observability/runbooks/PAREMemoryPressure.md"
+
+      - alert: PAREMemoryPressure
+        expr: |
+          (
+            process_resident_memory_bytes{job="pare"}
+            /
+            node_memory_MemTotal_bytes
+          ) * 100 > 90
+        for: 2m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE memory usage critical - exceeds 90%"
+          description: "PARE process memory usage is at {{ $value | printf \"%.1f\" }}% of available memory. Risk of OOM kill imminent."
+          runbook_url: "observability/runbooks/PAREMemoryPressure.md"
+
+      - alert: PAREHeapMemoryHigh
+        expr: |
+          nodejs_heap_size_used_bytes{job="pare"} / nodejs_heap_size_total_bytes{job="pare"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE Node.js heap usage high"
+          description: "Node.js heap usage is at {{ $value | humanizePercentage }}. Garbage collection may be under pressure."
+          runbook_url: "observability/runbooks/PAREMemoryPressure.md"
+
+  - name: pare-circuit-breaker
+    interval: 15s
+    rules:
+      - alert: PARECircuitBreakerOpen
+        expr: |
+          pare_circuit_breaker_state == 1
+        for: 30s
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE circuit breaker OPEN for {{ $labels.parser_type }}"
+          description: "Circuit breaker for {{ $labels.parser_type }} parser has been in OPEN state for 30+ seconds. This parser is temporarily unavailable."
+          runbook_url: "observability/runbooks/PARECircuitBreakerOpen.md"
+
+      - alert: PARECircuitBreakerHalfOpen
+        expr: |
+          pare_circuit_breaker_state == 0.5
+        for: 2m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE circuit breaker in half-open state for {{ $labels.parser_type }}"
+          description: "Circuit breaker for {{ $labels.parser_type }} parser has been in HALF_OPEN state for 2+ minutes. Recovery may be slow."
+          runbook_url: "observability/runbooks/PARECircuitBreakerOpen.md"
+
+      - alert: PAREMultipleCircuitBreakersOpen
+        expr: |
+          count(pare_circuit_breaker_state == 1) >= 2
+        for: 30s
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "Multiple PARE circuit breakers OPEN"
+          description: "{{ $value }} parser circuit breakers are in OPEN state. Multiple parsing capabilities are degraded."
+          runbook_url: "observability/runbooks/PARECircuitBreakerOpen.md"
+
+      - alert: PARECircuitBreakerTripsHigh
+        expr: |
+          sum(rate(pare_circuit_breaker_trips_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE circuit breaker trips frequent"
+          description: "Circuit breakers are tripping at {{ $value | printf \"%.2f\" }} trips/sec. Underlying parser instability detected."
+          runbook_url: "observability/runbooks/PARECircuitBreakerOpen.md"
+
+  - name: pare-rate-limiting
+    interval: 30s
+    rules:
+      - alert: PAREHighRateLimitHits
+        expr: |
+          sum(rate(pare_rate_limit_exceeded_total[1m])) * 60 > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE rate limiting triggered frequently"
+          description: "Rate limits are being exceeded at {{ $value | printf \"%.1f\" }} times per minute. Consider reviewing rate limit configuration or client behavior."
+          runbook_url: "observability/runbooks/PAREHighRateLimitHits.md"
+
+      - alert: PAREHighRateLimitHits
+        expr: |
+          sum(rate(pare_rate_limit_exceeded_total[1m])) * 60 > 50
+        for: 2m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE rate limiting critical - potential abuse"
+          description: "Rate limits are being exceeded at {{ $value | printf \"%.1f\" }} times per minute. Possible abuse or misconfigured client."
+          runbook_url: "observability/runbooks/PAREHighRateLimitHits.md"
+
+      - alert: PAREIPRateLimitHigh
+        expr: |
+          sum(rate(pare_rate_limit_exceeded_total{limit_type="ip"}[5m])) by (limit_type) * 300 > 20
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE IP-based rate limiting elevated"
+          description: "IP-based rate limits exceeded {{ $value | printf \"%.0f\" }} times in 5 minutes. May indicate targeted abuse."
+          runbook_url: "observability/runbooks/PAREHighRateLimitHits.md"
+
+  - name: pare-security
+    interval: 30s
+    rules:
+      - alert: PARESecurityBlocksHigh
+        expr: |
+          sum(rate(pare_security_blocks_total[5m])) * 300 > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE security blocks elevated"
+          description: "Security blocks occurred {{ $value | printf \"%.0f\" }} times in 5 minutes. Review block reasons for potential attacks."
+          runbook_url: "observability/runbooks/PARESecurityBlocks.md"
+
+      - alert: PAREMalwareDetected
+        expr: |
+          sum(rate(pare_security_blocks_total{block_reason="malware_detected"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE detected malware in uploads"
+          description: "Malware has been detected and blocked in uploaded files. Investigate source immediately."
+          runbook_url: "observability/runbooks/PARESecurityBlocks.md"
+
+      - alert: PAREPathTraversalAttempts
+        expr: |
+          sum(rate(pare_security_blocks_total{block_reason="path_traversal"}[5m])) * 300 > 5
+        for: 5m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE path traversal attempts detected"
+          description: "{{ $value | printf \"%.0f\" }} path traversal attempts blocked in 5 minutes. Possible attack in progress."
+          runbook_url: "observability/runbooks/PARESecurityBlocks.md"
+
+  - name: pare-parsing-health
+    interval: 30s
+    rules:
+      - alert: PAREParseFailureRateHigh
+        expr: |
+          (
+            sum(rate(pare_parse_operations_total{success="false"}[5m])) by (parser_type)
+            /
+            sum(rate(pare_parse_operations_total[5m])) by (parser_type)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: pare
+        annotations:
+          summary: "PARE {{ $labels.parser_type }} parser failure rate high"
+          description: "{{ $labels.parser_type }} parser is failing {{ $value | humanizePercentage }} of operations."
+          runbook_url: "observability/runbooks/PAREParseFailures.md"
+
+      - alert: PAREParseFailureRateCritical
+        expr: |
+          (
+            sum(rate(pare_parse_operations_total{success="false"}[5m])) by (parser_type)
+            /
+            sum(rate(pare_parse_operations_total[5m])) by (parser_type)
+          ) > 0.25
+        for: 5m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE {{ $labels.parser_type }} parser failure rate critical"
+          description: "{{ $labels.parser_type }} parser is failing {{ $value | humanizePercentage }} of operations. Parser may be broken."
+          runbook_url: "observability/runbooks/PAREParseFailures.md"
+
+      - alert: PAREAllParsersDown
+        expr: |
+          sum(rate(pare_parse_operations_total{success="true"}[5m])) == 0
+          and
+          sum(rate(pare_parse_operations_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: pare
+        annotations:
+          summary: "PARE all parsers failing"
+          description: "No successful parse operations in 2 minutes while parsing is being attempted. All document processing is broken."
+          runbook_url: "observability/runbooks/PAREParseFailures.md"

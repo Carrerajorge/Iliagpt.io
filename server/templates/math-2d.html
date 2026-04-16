@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITLE}}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: monospace; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
+  canvas { width: 100%; border-radius: 8px; cursor: crosshair; }
+  .controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #94a3b8; }
+  button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+  button:hover { background: #334155; }
+  h1 { font-size: 14px; font-weight: bold; color: #e2e8f0; }
+</style>
+</head>
+<body>
+<h1>📈 {{TITLE}}</h1>
+<canvas id="c"></canvas>
+<div class="controls">
+  <span>Scroll to zoom · Drag to pan · Hover for values</span>
+  <button onclick="resetView()">Reset View</button>
+</div>
+<div id="coord" style="font-size:11px;color:#64748b;min-height:16px"></div>
+<script>
+// CONFIGURATION - replace these with your values
+const EXPR = '{{EXPRESSION}}'; // e.g., 'x^2 + 3*x - 2'
+const TITLE = '{{TITLE}}';
+const X_MIN_BASE = {{X_MIN}}; // e.g., -10
+const X_MAX_BASE = {{X_MAX}}; // e.g., 10
+const EXTRA_EXPRS = []; // Add more: [{expr:'x^2', color:'#f59e0b', label:'f(x)=x²'}]
+const COLORS = ['#818cf8', '#34d399', '#f59e0b', '#f87171', '#60a5fa'];
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let zoom = 1, panX = 0, isDragging = false, lastMx = 0, hoverX = null;
+
+function evalExpr(expr, x) {
+  try {
+    const c = expr.replace(/\^/g,'**')
+      .replace(/\bx\b/g,'('+x+')')
+      .replace(/\bpi\b/gi,Math.PI)
+      .replace(/\bsin\(/g,'Math.sin(').replace(/\bcos\(/g,'Math.cos(')
+      .replace(/\btan\(/g,'Math.tan(').replace(/\bsqrt\(/g,'Math.sqrt(')
+      .replace(/\babs\(/g,'Math.abs(').replace(/\bexp\(/g,'Math.exp(')
+      .replace(/\bln\(/g,'Math.log(').replace(/\blog\(/g,'Math.log10(')
+      .replace(/\bpow\(/g,'Math.pow(');
+    const f = new Function('Math', 'return ' + c);
+    const r = f(Math);
+    return (typeof r === 'number' && isFinite(r)) ? r : NaN;
+  } catch(e) { return NaN; }
+}
+
+function getXRange() {
+  return [X_MIN_BASE / zoom + panX, X_MAX_BASE / zoom + panX];
+}
+
+function resize() {
+  canvas.width = canvas.offsetWidth * devicePixelRatio;
+  const h = Math.min(450, Math.round(canvas.offsetWidth * 0.65));
+  canvas.height = h * devicePixelRatio;
+  canvas.style.height = h + 'px';
+  draw();
+}
+
+function draw() {
+  const W = canvas.width, H = canvas.height;
+  const pad = Math.round(42 * devicePixelRatio);
+  const [xMin, xMax] = getXRange();
+  const allExprs = [EXPR, ...EXTRA_EXPRS.map(e => e.expr)];
+  const allColors = [COLORS[0], ...EXTRA_EXPRS.map((e,i) => e.color || COLORS[i+1])];
+  const steps = Math.max(300, W);
+
+  const allPts = allExprs.map(expr => {
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const x = xMin + (i / steps) * (xMax - xMin);
+      const y = evalExpr(expr, x);
+      if (!isNaN(y)) pts.push({x, y});
+    }
+    return pts;
+  });
+
+  const allY = allPts.flat().map(p => p.y).filter(y => isFinite(y));
+  let yMin = allY.length ? Math.min(...allY) : -10;
+  let yMax = allY.length ? Math.max(...allY) : 10;
+  if (yMax - yMin < 0.01) { yMin -= 5; yMax += 5; }
+  const yPad = (yMax - yMin) * 0.05;
+  yMin -= yPad; yMax += yPad;
+
+  function toPixel(x, y) {
+    return [pad + (x - xMin) / (xMax - xMin) * (W - 2*pad), H - pad - (y - yMin) / (yMax - yMin) * (H - 2*pad)];
+  }
+
+  ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 10; i++) {
+    const x = xMin + (i/10)*(xMax-xMin), [px] = toPixel(x, 0);
+    ctx.beginPath(); ctx.moveTo(px, pad); ctx.lineTo(px, H-pad); ctx.stroke();
+    const y = yMin + (i/10)*(yMax-yMin), [,py] = toPixel(0, y);
+    ctx.beginPath(); ctx.moveTo(pad, py); ctx.lineTo(W-pad, py); ctx.stroke();
+  }
+
+  // Axes
+  ctx.strokeStyle = '#475569'; ctx.lineWidth = 1.5;
+  if (yMin <= 0 && yMax >= 0) { const [,py0] = toPixel(0,0); ctx.beginPath(); ctx.moveTo(pad,py0); ctx.lineTo(W-pad,py0); ctx.stroke(); }
+  if (xMin <= 0 && xMax >= 0) { const [px0] = toPixel(0,0); ctx.beginPath(); ctx.moveTo(px0,pad); ctx.lineTo(px0,H-pad); ctx.stroke(); }
+
+  // Labels
+  ctx.fillStyle = '#64748b'; ctx.font = (10*devicePixelRatio)+'px monospace'; ctx.textAlign = 'center';
+  for (let i = 0; i <= 10; i++) {
+    const x = xMin+(i/10)*(xMax-xMin), [px] = toPixel(x,yMin);
+    ctx.fillText(x.toFixed(1), px, H-pad+14*devicePixelRatio);
+    const y = yMin+(i/10)*(yMax-yMin), [,py] = toPixel(xMin,y);
+    ctx.textAlign='right'; ctx.fillText(y.toFixed(1), pad-4, py+4); ctx.textAlign='center';
+  }
+
+  // Curves
+  allPts.forEach((pts, idx) => {
+    ctx.strokeStyle = allColors[idx]; ctx.lineWidth = 2.5*devicePixelRatio; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let started = false;
+    for (const pt of pts) {
+      const [px,py] = toPixel(pt.x, pt.y);
+      if (!started) { ctx.moveTo(px,py); started=true; } else ctx.lineTo(px,py);
+    }
+    ctx.stroke();
+  });
+
+  // Hover
+  if (hoverX !== null) {
+    const hY = evalExpr(EXPR, hoverX);
+    if (!isNaN(hY)) {
+      const [hpx, hpy] = toPixel(hoverX, hY);
+      ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=devicePixelRatio; ctx.setLineDash([4*devicePixelRatio,4*devicePixelRatio]);
+      ctx.beginPath(); ctx.moveTo(hpx,pad); ctx.lineTo(hpx,H-pad); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pad,hpy); ctx.lineTo(W-pad,hpy); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle=COLORS[0]; ctx.beginPath(); ctx.arc(hpx,hpy,5*devicePixelRatio,0,2*Math.PI); ctx.fill();
+      document.getElementById('coord').textContent = 'x = '+hoverX.toFixed(3)+', y = '+hY.toFixed(3);
+    }
+  }
+
+  ctx.fillStyle='#e2e8f0'; ctx.font='bold '+(13*devicePixelRatio)+'px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(TITLE, W/2, 18*devicePixelRatio);
+}
+
+canvas.addEventListener('wheel', e => { e.preventDefault(); zoom *= e.deltaY>0?0.85:1.18; zoom=Math.min(Math.max(zoom,0.05),100); draw(); }, {passive:false});
+canvas.addEventListener('mousedown', e => { isDragging=true; lastMx=e.clientX; });
+canvas.addEventListener('mousemove', e => {
+  const rect=canvas.getBoundingClientRect(), mx=(e.clientX-rect.left)/rect.width*canvas.width;
+  const [xMin,xMax]=getXRange(), pad=42*devicePixelRatio;
+  hoverX=xMin+(mx-pad)/(canvas.width-2*pad)*(xMax-xMin);
+  if(isDragging){const [xMin2,xMax2]=getXRange();panX-=(e.clientX-lastMx)/canvas.offsetWidth*(xMax2-xMin2);lastMx=e.clientX;}
+  draw();
+});
+canvas.addEventListener('mouseup', () => isDragging=false);
+canvas.addEventListener('mouseleave', () => { isDragging=false; hoverX=null; document.getElementById('coord').textContent=''; draw(); });
+function resetView(){ zoom=1; panX=0; draw(); }
+new ResizeObserver(resize).observe(canvas);
+resize();
+</script>
+</body>
+</html>

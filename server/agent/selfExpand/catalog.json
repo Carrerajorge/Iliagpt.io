@@ -1,0 +1,324 @@
+{
+  "version": "1.0.0",
+  "capabilities": [
+    {
+      "id": "pdf-parsing",
+      "tags": ["pdf", "parse", "document", "text", "extract"],
+      "repos": [
+        {
+          "name": "pdf-parse",
+          "git": "https://github.com/modesty/pdf-parse.git",
+          "extractPaths": ["lib/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "docx-parsing",
+      "tags": ["docx", "word", "document", "parse", "html", "convert"],
+      "repos": [
+        {
+          "name": "mammoth",
+          "git": "https://github.com/mwilliamson/mammoth.js.git",
+          "extractPaths": ["lib/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "xlsx-parsing",
+      "tags": ["xlsx", "excel", "spreadsheet", "parse", "document"],
+      "repos": [
+        {
+          "name": "sheetjs",
+          "git": "https://github.com/SheetJS/sheetjs.git",
+          "extractPaths": ["bits/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "csv-parsing",
+      "tags": ["csv", "parse", "tabular", "data", "document"],
+      "repos": [
+        {
+          "name": "csv-parse",
+          "git": "https://github.com/adaltas/node-csv.git",
+          "extractPaths": ["packages/csv-parse/lib/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "image-processing",
+      "tags": ["image", "sharp", "transform", "convert", "process"],
+      "repos": [
+        {
+          "name": "sharp",
+          "git": "https://github.com/lovell/sharp.git",
+          "extractPaths": ["lib/"],
+          "language": "javascript",
+          "nativeBindings": true
+        },
+        {
+          "name": "jimp",
+          "git": "https://github.com/jimp-dev/jimp.git",
+          "extractPaths": ["packages/jimp/src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "image-resize",
+      "tags": ["image", "resize", "scale", "thumbnail"],
+      "repos": [
+        {
+          "name": "pica",
+          "git": "https://github.com/nodeca/pica.git",
+          "extractPaths": ["lib/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "markdown-html",
+      "tags": ["markdown", "html", "convert", "marked", "document"],
+      "repos": [
+        {
+          "name": "marked",
+          "git": "https://github.com/markedjs/marked.git",
+          "extractPaths": ["lib/", "src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "dom-scraping",
+      "tags": ["html", "dom", "scrape", "parse", "cheerio", "selector"],
+      "repos": [
+        {
+          "name": "cheerio",
+          "git": "https://github.com/cheeriojs/cheerio.git",
+          "extractPaths": ["src/"],
+          "language": "typescript"
+        }
+      ]
+    },
+    {
+      "id": "html-to-markdown",
+      "tags": ["html", "markdown", "convert", "turndown"],
+      "repos": [
+        {
+          "name": "turndown",
+          "git": "https://github.com/mixmark-io/turndown.git",
+          "extractPaths": ["src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "crypto-hashing",
+      "tags": ["crypto", "hash", "md5", "sha256", "encrypt", "hmac"],
+      "repos": [
+        {
+          "name": "crypto-js",
+          "git": "https://github.com/brix/crypto-js.git",
+          "extractPaths": ["src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "jwt-handling",
+      "tags": ["jwt", "token", "auth", "jose", "sign", "verify"],
+      "repos": [
+        {
+          "name": "jose",
+          "git": "https://github.com/panva/jose.git",
+          "extractPaths": ["src/"],
+          "language": "typescript"
+        }
+      ]
+    },
+    {
+      "id": "zip-compression",
+      "tags": ["zip", "compress", "archive", "unzip", "extract"],
+      "repos": [
+        {
+          "name": "adm-zip",
+          "git": "https://github.com/cthackers/adm-zip.git",
+          "extractPaths": ["adm-zip.js", "methods/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "tar-compression",
+      "tags": ["tar", "compress", "archive", "stream", "extract"],
+      "repos": [
+        {
+          "name": "tar-stream",
+          "git": "https://github.com/mafintosh/tar-stream.git",
+          "extractPaths": ["."],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "nlp-processing",
+      "tags": ["nlp", "text", "language", "compromise", "parse", "sentence"],
+      "repos": [
+        {
+          "name": "compromise",
+          "git": "https://github.com/spencermountain/compromise.git",
+          "extractPaths": ["src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "nlp-toolkit",
+      "tags": ["nlp", "tokenize", "stem", "classify", "natural", "sentiment"],
+      "repos": [
+        {
+          "name": "natural",
+          "git": "https://github.com/NaturalNode/natural.git",
+          "extractPaths": ["lib/natural/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "markdown-rendering",
+      "tags": ["markdown", "render", "html", "marked", "parse"],
+      "repos": [
+        {
+          "name": "marked",
+          "git": "https://github.com/markedjs/marked.git",
+          "extractPaths": ["src/"],
+          "language": "typescript"
+        }
+      ]
+    },
+    {
+      "id": "markdown-processing",
+      "tags": ["markdown", "parse", "render", "plugin", "markdown-it"],
+      "repos": [
+        {
+          "name": "markdown-it",
+          "git": "https://github.com/markdown-it/markdown-it.git",
+          "extractPaths": ["lib/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "yaml-parsing",
+      "tags": ["yaml", "yml", "parse", "serialize", "config"],
+      "repos": [
+        {
+          "name": "js-yaml",
+          "git": "https://github.com/nodeca/js-yaml.git",
+          "extractPaths": ["lib/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "template-rendering",
+      "tags": ["template", "handlebars", "render", "mustache", "html"],
+      "repos": [
+        {
+          "name": "handlebars",
+          "git": "https://github.com/handlebars-lang/handlebars.js.git",
+          "extractPaths": ["lib/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "template-simple",
+      "tags": ["template", "mustache", "render", "simple", "logic-less"],
+      "repos": [
+        {
+          "name": "mustache",
+          "git": "https://github.com/janl/mustache.js.git",
+          "extractPaths": ["mustache.js"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "date-manipulation",
+      "tags": ["date", "time", "format", "parse", "date-fns", "calendar"],
+      "repos": [
+        {
+          "name": "date-fns",
+          "git": "https://github.com/date-fns/date-fns.git",
+          "extractPaths": ["src/"],
+          "language": "typescript"
+        }
+      ]
+    },
+    {
+      "id": "math-computation",
+      "tags": ["math", "compute", "algebra", "matrix", "expression", "calculate"],
+      "repos": [
+        {
+          "name": "mathjs",
+          "git": "https://github.com/josdejong/mathjs.git",
+          "extractPaths": ["src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "string-validation",
+      "tags": ["validate", "string", "sanitize", "email", "url", "check"],
+      "repos": [
+        {
+          "name": "validator",
+          "git": "https://github.com/validatorjs/validator.js.git",
+          "extractPaths": ["src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "ocr-vision",
+      "tags": ["ocr", "vision", "image", "text", "recognize", "tesseract"],
+      "repos": [
+        {
+          "name": "tesseract.js",
+          "git": "https://github.com/naptha/tesseract.js.git",
+          "extractPaths": ["src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "password-hashing",
+      "tags": ["bcrypt", "password", "hash", "auth", "security"],
+      "repos": [
+        {
+          "name": "bcryptjs",
+          "git": "https://github.com/dcodeIO/bcrypt.js.git",
+          "extractPaths": ["src/"],
+          "language": "javascript"
+        }
+      ]
+    },
+    {
+      "id": "email-validation",
+      "tags": ["email", "validate", "check", "format", "address"],
+      "repos": [
+        {
+          "name": "email-validator",
+          "git": "https://github.com/manishsaraan/email-validator.git",
+          "extractPaths": ["index.js"],
+          "language": "javascript"
+        }
+      ]
+    }
+  ]
+}

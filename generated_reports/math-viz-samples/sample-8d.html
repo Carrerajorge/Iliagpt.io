@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>8D Mathematical Visualization</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: monospace; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
+  canvas { width: 100%; border-radius: 8px; }
+  .controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #94a3b8; }
+  button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+  button.active { background: #4f46e5; border-color: #4f46e5; }
+  h1 { font-size: 14px; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>📊 8D Mathematical Visualization</h1>
+<canvas id="c"></canvas>
+<div class="controls">
+  <span>8D visualization via parallel coordinates</span>
+  <div style="display:flex;gap:6px">
+    <button id="mParallel" class="active" onclick="setMode('parallel')">Parallel</button>
+    <button id="mScatter" onclick="setMode('scatter')">Scatter</button>
+    <button id="mRadar" onclick="setMode('radar')">Radar</button>
+  </div>
+</div>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const DIMS=8;
+const TITLE="8D Mathematical Visualization";
+let mode='parallel';
+
+// Generate sample data for the ND visualization
+const LABELS=Array.from({length:DIMS},(_,i)=>'x'+(i+1));
+const N_PTS=50;
+const rawPts=Array.from({length:N_PTS},(_,pi)=>({
+  values:Array.from({length:DIMS},(_,di)=>Math.sin(pi*0.3+di*1.1)*3+Math.random()*2-1),
+  label:'pt'+pi
+}));
+
+function normalize(pts){
+  const dims=pts[0].values.length;
+  const mins=Array(dims).fill(Infinity),maxs=Array(dims).fill(-Infinity);
+  for(const pt of pts) for(let d=0;d<dims;d++){mins[d]=Math.min(mins[d],pt.values[d]);maxs[d]=Math.max(maxs[d],pt.values[d]);}
+  return pts.map(pt=>({...pt,values:pt.values.map((v,d)=>{const r=maxs[d]-mins[d];return r<1e-10?0.5:(v-mins[d])/r;})}));
+}
+
+const normed=normalize(rawPts);
+
+function hsl(i,total){return 'hsla('+(i/Math.max(total-1,1)*280)+',80%,60%,0.7)';}
+function hslV(t){return 'hsl('+(1-t)*240+',80%,60%)';}
+
+function drawParallel(){
+  const W=canvas.width,H=canvas.height;
+  const pad={top:40,bottom:30,left:40,right:40};
+  const asp=(W-pad.left-pad.right)/(DIMS-1);
+  ctx.fillStyle='#0f172a';ctx.fillRect(0,0,W,H);
+  for(let pi=0;pi<normed.length;pi++){
+    const pt=normed[pi];
+    ctx.strokeStyle=hsl(pi,normed.length);ctx.lineWidth=1.5;
+    ctx.beginPath();
+    for(let d=0;d<DIMS;d++){
+      const ax=pad.left+d*asp,ay=pad.top+(1-pt.values[d])*(H-pad.top-pad.bottom);
+      d===0?ctx.moveTo(ax,ay):ctx.lineTo(ax,ay);
+    }
+    ctx.stroke();
+  }
+  for(let d=0;d<DIMS;d++){
+    const ax=pad.left+d*asp;
+    ctx.strokeStyle='#475569';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(ax,pad.top);ctx.lineTo(ax,H-pad.bottom);ctx.stroke();
+    ctx.fillStyle='#94a3b8';ctx.font='11px monospace';ctx.textAlign='center';
+    ctx.fillText(LABELS[d],ax,pad.top-8);
+  }
+  ctx.fillStyle='#e2e8f0';ctx.font='bold 13px sans-serif';ctx.textAlign='center';
+  ctx.fillText(TITLE,W/2,18);
+  ctx.fillStyle='#64748b';ctx.font='10px monospace';ctx.textAlign='right';
+  ctx.fillText(DIMS+'D · '+N_PTS+' pts',W-10,H-6);
+}
+
+function drawScatter(){
+  const W=canvas.width,H=canvas.height;
+  const d=Math.min(DIMS,5);
+  const pad=30,cW=(W-pad)/d,cH=(H-pad)/d;
+  ctx.fillStyle='#0f172a';ctx.fillRect(0,0,W,H);
+  for(let r=0;r<d;r++) for(let c=0;c<d;c++){
+    const x0=pad+c*cW,y0=pad+r*cH;
+    ctx.fillStyle='#0d1929';ctx.fillRect(x0+1,y0+1,cW-2,cH-2);
+    if(r===c){
+      ctx.fillStyle='#64748b';ctx.font='bold 10px monospace';ctx.textAlign='center';
+      ctx.fillText(LABELS[c],x0+cW/2,y0+cH/2+4);
+    } else {
+      for(let pi=0;pi<normed.length;pi++){
+        const pt=normed[pi];
+        const px=x0+4+pt.values[c]*(cW-8),py=y0+cH-4-pt.values[r]*(cH-8);
+        ctx.fillStyle=hsl(pi,normed.length);
+        ctx.beginPath();ctx.arc(px,py,2,0,2*Math.PI);ctx.fill();
+      }
+    }
+    ctx.strokeStyle='#1e293b';ctx.lineWidth=1;ctx.strokeRect(x0,y0,cW,cH);
+  }
+  ctx.fillStyle='#e2e8f0';ctx.font='bold 13px sans-serif';ctx.textAlign='center';ctx.fillText(TITLE,W/2,18);
+}
+
+function drawRadar(){
+  const W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
+  const R=Math.min(W,H)*0.35;
+  ctx.fillStyle='#0f172a';ctx.fillRect(0,0,W,H);
+  for(let ring=1;ring<=5;ring++){
+    const r=ring/5*R;
+    ctx.strokeStyle='#1e293b';ctx.lineWidth=1;ctx.beginPath();
+    for(let d=0;d<DIMS;d++){const a=d/DIMS*2*Math.PI-Math.PI/2;const px=cx+r*Math.cos(a),py=cy+r*Math.sin(a);d===0?ctx.moveTo(px,py):ctx.lineTo(px,py);}
+    ctx.closePath();ctx.stroke();
+  }
+  for(let d=0;d<DIMS;d++){
+    const a=d/DIMS*2*Math.PI-Math.PI/2;
+    ctx.strokeStyle='#475569';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+R*Math.cos(a),cy+R*Math.sin(a));ctx.stroke();
+    ctx.fillStyle='#94a3b8';ctx.font='10px monospace';
+    ctx.textAlign=Math.abs(Math.cos(a))<0.1?'center':Math.cos(a)>0?'left':'right';
+    ctx.fillText(LABELS[d],cx+(R+18)*Math.cos(a),cy+(R+18)*Math.sin(a)+4);
+  }
+  for(let pi=0;pi<normed.length;pi++){
+    const pt=normed[pi];
+    ctx.strokeStyle=hsl(pi,normed.length);ctx.fillStyle=hsl(pi,normed.length).replace('0.7)','0.1)');ctx.lineWidth=1.5;
+    ctx.beginPath();
+    for(let d=0;d<DIMS;d++){const a=d/DIMS*2*Math.PI-Math.PI/2;const r=pt.values[d]*R;const px=cx+r*Math.cos(a),py=cy+r*Math.sin(a);d===0?ctx.moveTo(px,py):ctx.lineTo(px,py);}
+    ctx.closePath();ctx.fill();ctx.stroke();
+  }
+  ctx.fillStyle='#e2e8f0';ctx.font='bold 13px sans-serif';ctx.textAlign='center';ctx.fillText(TITLE,W/2,18);
+}
+
+function draw(){
+  if(mode==='parallel')drawParallel();
+  else if(mode==='scatter')drawScatter();
+  else drawRadar();
+}
+
+function setMode(m){
+  mode=m;
+  ['mParallel','mScatter','mRadar'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  document.getElementById('m'+m.charAt(0).toUpperCase()+m.slice(1)).classList.add('active');
+  draw();
+}
+
+function resize(){
+  canvas.width=canvas.offsetWidth*devicePixelRatio;
+  const h=Math.min(450,Math.round(canvas.offsetWidth*0.65));
+  canvas.height=h*devicePixelRatio;canvas.style.height=h+'px';
+  draw();
+}
+new ResizeObserver(resize).observe(canvas);
+resize();
+</script>
+</body>
+</html>

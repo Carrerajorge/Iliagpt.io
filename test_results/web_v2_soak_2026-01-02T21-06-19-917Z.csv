@@ -1,0 +1,3 @@
+timestamp,elapsedSeconds,totalRequests,successRate,fetchP95Ms,browserP95Ms,heapUsedMb,rssMb,fdCount,openCircuits,activeRequests,leakDetected
+1767387979868,5.15,195,98.97,334,501,106.57,214.66,32,0,5,1
+1767387979911,5.20,200,99.00,334,501,106.57,214.66,32,0,0,1

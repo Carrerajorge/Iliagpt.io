@@ -1,0 +1,47 @@
+=== Sira GPT Test Suite ===
+
+Checking prerequisites...
+Checking for port conflicts...
+
+=== Running Unit Tests (Vitest) ===
+
+
+> rest-express@1.0.0 test:run
+> vitest run server/__tests__/documentAnalysis.test.ts
+
+
+[1m[46m RUN [49m[22m [36mv4.0.16 [39m[90m/home/runner/workspace[39m
+
+ [32m✓[39m server/__tests__/documentAnalysis.test.ts [2m([22m[2m38 tests[22m[2m)[22m[32m 97[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m38 passed[39m[22m[90m (38)[39m
+[2m   Start at [22m 02:39:08
+[2m   Duration [22m 1.19s[2m (transform 390ms, setup 0ms, import 682ms, tests 97ms, environment 0ms)[22m
+
+[0;32m✓ Unit tests passed[0m
+
+=== Running E2E Tests (Playwright) ===
+
+
+Running 13 tests using 4 workers
+
+  ✓   4 [chromium] › e2e/documentAnalysis.spec.ts:230:3 › Document Analysis Flow - Mocked API › should verify API response format matches frontend expectations (2.4s)
+  ✓   1 [chromium] › e2e/documentAnalysis.spec.ts:249:3 › Document Analysis Flow - Mocked API › should verify sheet status transitions are valid (1.3s)
+  ✓   5 [chromium] › e2e/documentAnalysis.spec.ts:261:3 › Document Analysis Flow - Mocked API › should verify metrics format is correct (1.6s)
+  ✓   6 [chromium] › e2e/documentAnalysis.spec.ts:274:3 › Document Analysis Flow - Mocked API › should verify preview data structure (1.6s)
+  ✓   8 [chromium] › e2e/documentAnalysis.spec.ts:310:3 › Document Analysis Flow - Mocked API › should verify cross-sheet summary is present (1.3s)
+  ✓   7 [chromium] › e2e/documentAnalysis.spec.ts:286:3 › Document Analysis Flow - Mocked API › should handle failed analysis state (1.7s)
+  ✓   9 [chromium] › e2e/documentAnalysis.spec.ts:316:3 › Document Analysis Flow - Mocked API › should verify all sheets have generated code (1.5s)
+  ✓  10 [chromium] › e2e/documentAnalysis.spec.ts:324:3 › Document Analysis Flow - Mocked API › should verify polling behavior transitions correctly (1.6s)
+  ✓  12 [chromium] › e2e/documentAnalysis.spec.ts:371:3 › Document Analysis Component Tests › should verify DocumentAnalysisResults renders correctly with test data (17.9s)
+  ✓   2 [chromium] › e2e/documentAnalysis.spec.ts:197:3 › Document Analysis Flow - Mocked API › should display progress during analysis with mocked states (31.5s)
+  ✓   3 [chromium] › e2e/documentAnalysis.spec.ts:185:3 › Document Analysis Flow - Mocked API › should render document analysis results card with mocked data (36.0s)
+  ✓  13 [chromium] › e2e/documentAnalysis.spec.ts:420:3 › Document Analysis Component Tests › should verify progress card renders with sheet statuses (20.4s)
+  ✓  11 [chromium] › e2e/documentAnalysis.spec.ts:344:3 › Document Analysis Flow - Mocked API › should verify analysis does not call real LLM (39.6s)
+
+  13 passed (50.9s)
+[0;32m✓ E2E tests passed[0m
+
+=== Test Summary ===
+[0;32mAll tests passed![0m

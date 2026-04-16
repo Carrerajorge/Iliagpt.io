@@ -1,0 +1,39 @@
+# Estado/artefactos del IDE o sandbox (NO deben escanearse)
+sandbox_workspace/
+**/.state/
+
+# Attached assets - only exclude non-code files, keep .py and .ts for scanning
+attached_assets/*.json
+attached_assets/*.md
+attached_assets/*.txt
+attached_assets/*.log
+
+# caches comunes
+**/__pycache__/
+**/*.pyc
+node_modules/
+dist/
+build/
+
+# Test files and mocks
+**/test_*.py
+**/*_test.py
+**/tests/
+**/*.test.ts
+**/*.test.js
+
+# Generated files
+*.min.js
+*.bundle.js
+
+# User content / binary blobs
+Downloads/
+uploads/
+*.traineddata
+e2e-reports/
+generated_reports/
+cowork_test_suite/
+
+# Claude/Claire worktrees
+.claude/worktrees/
+.claire/worktrees/

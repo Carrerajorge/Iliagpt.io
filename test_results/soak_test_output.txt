@@ -1,0 +1,65 @@
+======================================================================
+SOAK TEST - Web Retrieval System
+======================================================================
+
+Configuration:
+  Concurrency: 100
+  Duration: 60 seconds
+  Success Rate Threshold: 95%
+  Mode: FAST (minimal latencies)
+
+[5.0s] Requests: 11303 | Success: 97.94% | Active: 100 | Heap: 40.3MB
+[10.0s] Requests: 22663 | Success: 97.92% | Active: 100 | Heap: 60.8MB
+[15.0s] Requests: 34135 | Success: 97.90% | Active: 100 | Heap: 88.3MB
+[20.0s] Requests: 45581 | Success: 97.90% | Active: 100 | Heap: 109.2MB
+[25.0s] Requests: 56936 | Success: 97.92% | Active: 100 | Heap: 134.9MB
+[30.0s] Requests: 68179 | Success: 97.91% | Active: 100 | Heap: 153.7MB
+[35.0s] Requests: 79567 | Success: 97.95% | Active: 100 | Heap: 181.1MB
+[40.0s] Requests: 90956 | Success: 97.93% | Active: 100 | Heap: 203.3MB
+[45.0s] Requests: 101985 | Success: 97.92% | Active: 100 | Heap: 221.1MB
+[50.0s] Requests: 112796 | Success: 97.91% | Active: 100 | Heap: 231.6MB
+[55.1s] Requests: 123444 | Success: 97.92% | Active: 100 | Heap: 257.1MB
+
+======================================================================
+SOAK TEST RESULTS
+======================================================================
+
+Request Statistics:
+  Total Requests:      134776
+  Successful:          132003
+  Failed:              2773
+  Success Rate:        97.94%
+  Requests/Second:     2244.25
+  Duration:            60.05s
+
+Latency Statistics:
+  Min:                 14.64ms
+  Max:                 207.33ms
+  Avg:                 44.46ms
+  P50:                 44.27ms
+  P95:                 64.66ms
+  P99:                 71.11ms
+
+Memory Statistics:
+  Peak Heap Used:      279.55MB
+  Memory Growth:       259.02MB
+  Final Heap Used:     279.55MB
+  Final RSS:           372.84MB
+
+Error Types:
+  network              718 (0.53%)
+  rate_limit           696 (0.52%)
+  timeout              682 (0.51%)
+  memory               677 (0.50%)
+
+Phase Latency Breakdown (P50/P95/Avg):
+  plan         P50: 0.0ms  P95: 0.0ms  Avg: 0.0ms
+  search       P50: 13.2ms  P95: 20.2ms  Avg: 13.4ms
+  fetch        P50: 30.9ms  P95: 48.9ms  Avg: 31.0ms
+  extract      P50: 0.0ms  P95: 0.0ms  Avg: 0.0ms
+  filter       P50: 0.0ms  P95: 0.1ms  Avg: 0.1ms
+
+======================================================================
+RESULT: ✓ PASS
+  Success Rate: 97.94% (threshold: 95%)
+======================================================================

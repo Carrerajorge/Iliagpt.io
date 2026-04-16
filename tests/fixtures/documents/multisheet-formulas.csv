@@ -1,0 +1,6 @@
+product_id,product_name,price_usd,quantity,formula_total,date_added,region
+P001,Widget A,29.99,100,2999.00,2025-01-15,US-WEST
+P002,Widget B,49.99,50,2499.50,15/01/2025,EU-CENTRAL
+P003,"Special, Item",99.99,25,2499.75,2025/01/15,LATAM
+P004,Gadget X,199.99,10,1999.90,01-15-2025,APAC
+P005,"Quote ""Test""",15.50,200,3100.00,2025-01-15T10:30:00Z,US-EAST

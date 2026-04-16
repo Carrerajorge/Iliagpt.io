@@ -1,0 +1,204 @@
+import type { BundledSkill } from "@shared/skillsRuntime";
+
+export const BUNDLED_SKILLS: BundledSkill[] = [
+    // User-provided 50 skills
+    { id: "1password", name: "1password", description: "Inyección segura de secretos y gestión completa de bóvedas 1Password.", category: "integrations", features: ["Inyección segura de secretos", "Gestión de bóvedas", "Generación de contraseñas", "Auditoría de seguridad"] },
+    { id: "apple-notes", name: "apple-notes", description: "Sincronización, búsqueda semántica y gestión de Apple Notes en macOS.", category: "documents", features: ["Sincronización iCloud", "Búsqueda semántica", "Gestión de carpetas", "Exportación de notas"] },
+    { id: "apple-reminders", name: "apple-reminders", description: "Gestión avanzada de listas, alertas y priorización en Apple Reminders.", category: "integrations", features: ["Gestión de listas", "Alertas basadas en tiempo", "Sincronización de tareas", "Priorización de items"] },
+    { id: "bear-notes", name: "bear-notes", description: "Creación y búsqueda rápida de notas Markdown con etiquetado anidado en Bear.", category: "documents", features: ["Etiquetado anidado", "Soporte Markdown", "Búsqueda rápida", "Enlace entre notas"] },
+    { id: "blogwatcher", name: "blogwatcher", description: "Monitoreo automatizado de feeds RSS/Atom y alertas de actualización de blogs.", category: "data", features: ["Monitoreo RSS/Atom", "Alertas de actualización", "Extracción de contenido", "Filtros de palabras clave"] },
+    { id: "blucli", name: "blucli", description: "Descubrimiento de dispositivos BluOS, control de zonas, volumen y colas de reproducción.", category: "integrations", features: ["Control de volumen", "Agrupación de zonas", "Descubrimiento de dispositivos", "Gestión de colas"] },
+    { id: "bluebubbles", name: "bluebubbles", description: "Gestión de iMessages, envío, lectura de historiales y automatización de SMS.", category: "integrations", features: ["Envío de iMessage", "Lectura de historial", "Gestión de adjuntos", "Automatización de SMS"] },
+    { id: "camsnap", name: "camsnap", description: "Capturas de streams RTSP/ONVIF, grabación de clips y detección de movimiento.", category: "data", features: ["Captura RTSP/ONVIF", "Grabación de clips", "Detección de movimiento", "Streaming en vivo"] },
+    { id: "clawhub", name: "clawhub", description: "Búsqueda, instalación, actualización y publicación remota de agent skills en ClawHub.", category: "custom", features: ["Búsqueda de skills", "Instalación de paquetes", "Actualizaciones OTA", "Publicación de módulos"] },
+    { id: "coding-agent", name: "coding-agent", description: "Asistente de programación para delegar tareas a modelos Codex o Claude Code.", category: "automation", features: ["Generación de código", "Revisión de PRs", "Refactorización autónoma", "Análisis de vulnerabilidades"] },
+    { id: "discord", name: "discord", description: "Integración completa con Discord para moderación, gestión de canales y mensajes.", category: "integrations", features: ["Gestión de canales", "Envío de mensajes", "Moderación automática", "Integración de webhooks"] },
+    { id: "eightctl", name: "eightctl", description: "Telemetría y control de temperatura, alarmas y zonas para camas Eight Sleep.", category: "integrations", features: ["Control de temperatura", "Programación de alarmas", "Telemetría de sueño", "Ajustes de zonas"] },
+    { id: "gemini", name: "gemini", description: "CLI avanzado para Gemini: generación de texto, análisis multimodal y Q&A contextual.", category: "integrations", features: ["Generación de texto", "Análisis multimodal", "Resúmenes estructurados", "QA contextual"] },
+    { id: "gh-issues", name: "gh-issues", description: "Gestión ágil de GitHub Issues, asignación, etiquetado inteligente y triaje.", category: "automation", features: ["Creación de tickets", "Asignación automática", "Etiquetado inteligente", "Cierre de PRs"] },
+    { id: "gifgrep", name: "gifgrep", description: "Búsqueda rápida de GIFs en TUI con previsualización, descarga y extracción de frames.", category: "data", features: ["Búsqueda de GIFs", "Descarga de medios", "Previsualización TUI", "Extracción de frames"] },
+    { id: "github", name: "github", description: "Operaciones agénticas completas en GitHub: repos, CI/CD, PRs y auditorías.", category: "integrations", features: ["Gestión de repos", "Revisión de código", "Acciones CI/CD", "Auditoría de commits"] },
+    { id: "gog", name: "gog", description: "Integración unificada de Google Workspace (Gmail, Calendar, Drive, Docs y Sheets).", category: "integrations", features: ["Integración Drive", "Gestión de Docs/Sheets", "Sincronización Calendar", "Contactos unificados"] },
+    { id: "goplaces", name: "goplaces", description: "Búsqueda enriquecida de puntos de interés y geocodificación mediante Google Places.", category: "data", features: ["Búsqueda de POI", "Detalles de ubicación", "Reseñas de lugares", "Geocodificación"] },
+    { id: "healthcheck", name: "healthcheck", description: "Auditorías de seguridad, escaneo de vulnerabilidades y hardening del sistema host.", category: "custom", features: ["Auditoría de seguridad", "Endurecimiento de host", "Escaneo de puertos", "Reporte de vulnerabilidades"] },
+    { id: "himalaya", name: "himalaya", description: "Cliente avanzado CLI para gestión completa de correos IMAP/SMTP y flujos de redacción.", category: "integrations", features: ["Gestión IMAP/SMTP", "Redacción de emails", "Búsqueda avanzada", "Filtros de bandeja"] },
+    { id: "imsg", name: "imsg", description: "Automatización total de iMessage/SMS en macOS (lectura, envío y extracción de medios).", category: "integrations", features: ["Envío de mensajes", "Lectura de hilos", "Extracción de medios", "Búsqueda de contactos"] },
+    { id: "mcporter", name: "mcporter", description: "Llamadas a servidores MCP, configuración de herramientas, auth unificada y scaffolding.", category: "automation", features: ["Llamadas MCP", "Configuración de servidores", "Auth unificada", "Generación de CLI"] },
+    { id: "model-usage", name: "model-usage", description: "Métricas analíticas de uso de tokens, estimaciones de costos y límites de cuota por modelo.", category: "data", features: ["Métricas de tokens", "Estimación de costos", "Límites de cuota", "Desglose por modelo"] },
+    { id: "nano-banana-pro", name: "nano-banana-pro", description: "Pipeline de generación, edición (inpainting) y upscaling de imágenes con IA.", category: "integrations", features: ["Generación de imágenes", "Edición Inpainting", "Upscaling", "Variaciones de estilo"] },
+    { id: "nano-pdf", name: "nano-pdf", description: "Extracción de texto, manipulación, división y llenado inteligente de PDFs mediante IA.", category: "documents", features: ["Extracción de texto", "División de páginas", "Fusión de documentos", "Llenado de formularios"] },
+    { id: "notion", name: "notion", description: "Gestión de bases de datos, páginas y consultas ricas en la API de Notion.", category: "integrations", features: ["Bases de datos", "Creación de páginas", "Sincronización de bloques", "Consultas ricas"] },
+    { id: "obsidian", name: "obsidian", description: "Interacción con bóvedas locales de Obsidian, grafos y búsqueda avanzada de Markdown.", category: "documents", features: ["Bóvedas Markdown", "Grafos de conocimiento", "Etiquetas frontmatter", "Búsqueda local"] },
+    { id: "openai-image-gen", name: "openai-image-gen", description: "Generación por lotes y variaciones visuales de imágenes mediante la API DALL-E de OpenAI.", category: "integrations", features: ["Generación DALL-E", "Variaciones de imagen", "Edición de máscaras", "Descarga de assets"] },
+    { id: "openai-whisper", name: "openai-whisper", description: "Transcripción de voz offline, generación de VTT/SRT y detección de idioma vía Whisper CLI.", category: "custom", features: ["Transcripción local", "Detección de idioma", "Marcas de tiempo", "Exportación VTT/SRT"] },
+    { id: "openai-whisper-api", name: "openai-whisper-api", description: "Transcripción remota de alta precisión y soporte multi-idioma con la API de OpenAI Audio.", category: "integrations", features: ["Transcripción remota", "Traducción al inglés", "Soporte multi-idioma", "Alta precisión"] },
+    { id: "openhue", name: "openhue", description: "Control total de iluminación Philips Hue: gestión de escenas, colores, brillo y zonas.", category: "integrations", features: ["Control de luces", "Gestión de escenas", "Ajuste de color/brillo", "Agrupación de zonas"] },
+    { id: "oracle", name: "oracle", description: "Consultas expertas, recomendaciones guiadas por IA y resolución de problemas avanzados.", category: "custom", features: ["Consultas expertas", "Análisis profundo", "Recomendaciones AI", "Resolución de problemas"] },
+    { id: "ordercli", name: "ordercli", description: "Seguimiento en vivo, estado y gestión de historial de órdenes de delivery (Foodora).", category: "data", features: ["Estado de órdenes", "Historial de pedidos", "Seguimiento en vivo", "Recibos digitales"] },
+    { id: "peekaboo", name: "peekaboo", description: "Automatización y testing UI en macOS, captura de pantallas y control de ventanas.", category: "automation", features: ["Captura de UI", "Automatización macOS", "Extracción de elementos", "Control de ventanas"] },
+    { id: "sag", name: "sag", description: "Clonación y síntesis de voz hiperrealista usando ElevenLabs Text-to-Speech (TTS).", category: "integrations", features: ["TTS ElevenLabs", "Clonación de voz", "Ajustes de prosodia", "Exportación de audio"] },
+    { id: "session-logs", name: "session-logs", description: "Análisis profundo de logs de sesión, búsqueda de eventos y exportación de trazas.", category: "data", features: ["Análisis de logs", "Búsqueda de eventos", "Filtros de tiempo", "Exportación de trazas"] },
+    { id: "sherpa-onnx-tts", name: "sherpa-onnx-tts", description: "Síntesis de voz local (TTS) de baja latencia mediante motores ligeros ONNX.", category: "custom", features: ["TTS local", "Baja latencia", "Modelos ONNX", "Voces offline"] },
+    { id: "skill-creator", name: "skill-creator", description: "Herramienta de andamiaje para diseñar, empaquetar y validar nuevas AgentSkills.", category: "automation", features: ["Andamiaje de skills", "Empaquetado", "Validación de manifiestos", "Tests automatizados"] },
+    { id: "slack", name: "slack", description: "Integración nativa con Slack para automatización de canales, hilos y manejo de archivos.", category: "integrations", features: ["Mensajes de Slack", "Gestión de canales", "Hilos de respuesta", "Manejo de adjuntos"] },
+    { id: "songsee", name: "songsee", description: "Visualización de espectrogramas, análisis de audio y extracción de paneles de features.", category: "data", features: ["Espectrogramas", "Análisis de audio", "Extracción de features", "Visualización panel"] },
+    { id: "sonoscli", name: "sonoscli", description: "Control inteligente de zonas, ecualización, colas y agrupaciones de parlantes Sonos.", category: "integrations", features: ["Control de zonas", "Gestión de colas", "Volumen y ecualización", "Búsqueda de red"] },
+    { id: "spotify-player", name: "spotify-player", description: "Búsqueda en catálogos y control remoto de reproducción nativa en dispositivos Spotify Connect.", category: "integrations", features: ["Control de reproducción", "Búsqueda de catálogos", "Gestión de playlists", "Dispositivos Connect"] },
+    { id: "summarize", name: "summarize", description: "Agente destilador de contexto: resúmenes automatizados de textos largos, podcasts y URLs.", category: "documents", features: ["Resumen de artículos", "Extracción de viñetas", "Destilación de contexto", "Lectura de transcripciones"] },
+    { id: "things-mac", name: "things-mac", description: "Programación de tareas y administración profunda de proyectos en Things 3 (macOS).", category: "integrations", features: ["Gestión de proyectos", "Etiquetas jerárquicas", "Bandeja de entrada", "Programación de tareas"] },
+    { id: "tmux", name: "tmux", description: "Control de multiplexación de terminal (tmux), sesiones persistentes y gestión de paneles.", category: "automation", features: ["Sesiones persistentes", "Gestión de ventanas", "Layouts de paneles", "Manejo de estados"] },
+    { id: "trello", name: "trello", description: "Sincronización de tableros, movimiento de tarjetas y asignaciones automáticas en Trello.", category: "integrations", features: ["Gestión de tableros", "Movimiento de tarjetas", "Asignación de miembros", "Fechas de vencimiento"] },
+    { id: "video-frames", name: "video-frames", description: "Pipeline de compresión y extracción masiva de fotogramas de video con FFmpeg.", category: "data", features: ["Extracción de fotogramas", "Compresión de clips", "Manejo de códecs", "Escalado de resolución"] },
+    { id: "voice-call", name: "voice-call", description: "Marcación VoIP, gestión interactiva de menús DTMF y control de llamadas (voz).", category: "integrations", features: ["Marcación VoIP", "Gestión de audio", "Grabación de llamadas", "DTMF interactivo"] },
+    { id: "wacli", name: "wacli", description: "Cliente CLI para la automatización de envíos y lecturas de mensajería en WhatsApp.", category: "integrations", features: ["Envío de mensajes", "Lectura de historial", "Automatización de grupos", "Manejo de adjuntos"] },
+    { id: "weather", name: "weather", description: "Reportes y alertas meteorológicas locales, incluyendo radares y pronósticos extendidos.", category: "data", features: ["Pronóstico extendido", "Condiciones actuales", "Radar meteorológico", "Alertas climáticas"] },
+
+    // Additional 50 Researched Skills
+    { id: "aws-cli", name: "aws-cli", description: "Operaciones integradas en AWS: gestión EC2/S3, auditoría IAM y reportes de facturación.", category: "integrations", features: ["Inventario de recursos", "Gestión IAM", "Costos y presupuestos", "Operaciones S3/EC2"] },
+    { id: "docker-ops", name: "docker-ops", description: "Gestión declarativa de contenedores, limpieza de imágenes, monitoreo y Docker Compose.", category: "automation", features: ["Salud de contenedores", "Poda de imágenes", "Logs en vivo", "Comandos Compose"] },
+    { id: "jira-manager", name: "jira-manager", description: "Triaje automatizado, creación y transición de estado de incidencias en Jira Software.", category: "integrations", features: ["Creación de incidencias", "Transiciones de estado", "Consultas JQL", "Priorización"] },
+    { id: "linear-sync", name: "linear-sync", description: "Integración y sincronización bidireccional de ciclos, tickets y triage en Linear.", category: "integrations", features: ["Sincronización de ciclos", "Gestión de triaje", "Hilos de comentarios", "Estados de proyecto"] },
+    { id: "vercel-deploy", name: "vercel-deploy", description: "Lanzamiento y supervisión de despliegues, edge logs y previas en la nube de Vercel.", category: "integrations", features: ["Despliegues en la nube", "Rollbacks", "Logs de edge functions", "Previews"] },
+    { id: "figma-pull", name: "figma-pull", description: "Sincronización de tokens de diseño, versiones y activos gráficos directamente desde Figma.", category: "integrations", features: ["Extracción de tokens", "Descarga de assets", "Comentarios de diseño", "Versiones de archivos"] },
+    { id: "gitlab-ops", name: "gitlab-ops", description: "Gestión de pipelines CI/CD, registros de contenedores y Merge Requests en GitLab.", category: "integrations", features: ["Pipelines CI/CD", "Gestión de merge requests", "Registros de contenedores", "Variables de entorno"] },
+    { id: "sentry-alert", name: "sentry-alert", description: "Resolución automatizada de excepciones, métricas APM y reglas de alerta en Sentry.", category: "integrations", features: ["Triage de errores", "Trazas de pila", "Reglas de alerta", "Métricas de rendimiento"] },
+    { id: "datadog-metric", name: "datadog-metric", description: "Monitoreo de infraestructura y consulta unificada de dashboards y trazas APM de Datadog.", category: "integrations", features: ["APM y trazas", "Monitores de infraestructura", "Logs unificados", "Dashboards"] },
+    { id: "pagerduty-oncall", name: "pagerduty-oncall", description: "Políticas de rotación, manejo escalado y atención en vivo de incidentes de PagerDuty.", category: "integrations", features: ["Gestión de incidentes", "Rotaciones de guardia", "Políticas de escalado", "Overrides"] },
+    { id: "stripe-dash", name: "stripe-dash", description: "Operativa financiera automatizada: suscripciones, pagos, reembolsos y eventos de Stripe.", category: "integrations", features: ["Gestión de pagos", "Suscripciones", "Reembolsos", "Webhooks de eventos"] },
+    { id: "twilio-sms", name: "twilio-sms", description: "Gestión programática de SMS entrantes y salientes, webhooks y registros con Twilio.", category: "integrations", features: ["Envío masivo SMS", "Webhooks entrantes", "Registros de entrega", "Manejo de Opt-Out"] },
+    { id: "sendgrid-mail", name: "sendgrid-mail", description: "Envíos transaccionales automatizados, gestión de entregabilidad y plantillas de SendGrid.", category: "integrations", features: ["Plantillas dinámicas", "Entregabilidad", "Listas de supresión", "Estadísticas de rebotes"] },
+    { id: "mailchimp-sync", name: "mailchimp-sync", description: "Sincronización bidireccional de audiencias, segmentación y métricas de apertura en Mailchimp.", category: "integrations", features: ["Campañas de email", "Segmentación de audiencia", "Etiquetado de usuarios", "Reportes de apertura"] },
+    { id: "hubspot-crm", name: "hubspot-crm", description: "Integración CRM para seguimiento de leads, tratos, embudos de ventas y correos en HubSpot.", category: "integrations", features: ["Gestión de tratos", "Seguimiento de contactos", "Embudos de venta", "Integración de correo"] },
+    { id: "salesforce-lookup", name: "salesforce-lookup", description: "Ejecución de consultas SOQL, actualización de registros y reportes en Salesforce.", category: "integrations", features: ["Consultas SOQL", "Gestión de Leads", "Campos personalizados", "Reportes de Salesforce"] },
+    { id: "zendesk-ticket", name: "zendesk-ticket", description: "Atención al cliente delegada: macros, actualización de tickets y SLA en Zendesk.", category: "integrations", features: ["Tickets de soporte", "Macros de respuesta", "Métricas de SLA", "Base de conocimientos"] },
+    { id: "intercom-chat", name: "intercom-chat", description: "Automatización de interacciones in-app, segmentación de usuarios y respuestas en Intercom.", category: "integrations", features: ["Mensajes in-app", "Segmentación de usuarios", "Respuestas automáticas", "Tour de producto"] },
+    { id: "zoom-meeting", name: "zoom-meeting", description: "Creación, gestión y generación de reportes de asistencia para salas virtuales en Zoom.", category: "integrations", features: ["Creación de salas", "Grabación en la nube", "Gestión de participantes", "Reportes de asistencia"] },
+    { id: "google-meet", name: "google-meet", description: "Generación ad-hoc de salas, subtítulos e integración con calendarios para Google Meet.", category: "integrations", features: ["Enlaces ad-hoc", "Invitación a eventos", "Moderación de sala", "Subtítulos en vivo"] },
+    { id: "teams-message", name: "teams-message", description: "Notificaciones automatizadas y tarjetas interactivas adaptables para canales de MS Teams.", category: "integrations", features: ["Canales de Teams", "Tarjetas adaptables", "Integración de bots", "Notificaciones push"] },
+    { id: "webex-call", name: "webex-call", description: "Programación e inicio rápido de llamadas PSTN, espacios y reuniones virtuales en Cisco WebEx.", category: "integrations", features: ["Reuniones WebEx", "Llamadas PSTN", "Gestión de espacios", "Pizarras virtuales"] },
+    { id: "calendly-book", name: "calendly-book", description: "Enrutamiento automatizado, gestión de disponibilidad y recordatorios para citas en Calendly.", category: "integrations", features: ["Disponibilidad", "Tipos de eventos", "Recordatorios automáticos", "Enrutamiento de citas"] },
+    { id: "typeform-answers", name: "typeform-answers", description: "Procesamiento analítico e ingesta de respuestas estructuradas provenientes de TypeForm.", category: "data", features: ["Webhook de respuestas", "Lógica de saltos", "Análisis de conversión", "Campos ocultos"] },
+    { id: "survey-monkey", name: "survey-monkey", description: "Extracción y cruce de datos tabulares a partir de encuestas y formularios en SurveyMonkey.", category: "data", features: ["Diseño de encuestas", "Análisis de resultados", "Lógica de paginación", "Exportación de datos"] },
+    { id: "google-analytics", name: "google-analytics", description: "Minería de datos GA4: reportes de tráfico, embudos de retención y analítica de eventos.", category: "data", features: ["Consultas GA4", "Eventos personalizados", "Embudos de retención", "Atribución de tráfico"] },
+    { id: "mixpanel-events", name: "mixpanel-events", description: "Consultas agénticas de flujos de interacción, retención y cohortes en eventos de Mixpanel.", category: "data", features: ["Análisis de cohortes", "Flujos de usuarios", "Propiedades de eventos", "Reportes de retención"] },
+    { id: "amplitude-cohort", name: "amplitude-cohort", description: "Análisis y experimentación AB sobre métricas de productos y comportamientos en Amplitude.", category: "data", features: ["Segmentación avanzada", "Impacto de features", "Experimentos AB", "Gráficos de embudo"] },
+    { id: "firebase-admin", name: "firebase-admin", description: "Operativa backend serverless, auth de usuarios y consultas a Firestore/Cloud Functions.", category: "automation", features: ["Consultas Firestore", "Auth de usuarios", "Reglas de seguridad", "Funciones Cloud"] },
+    { id: "supabase-ops", name: "supabase-ops", description: "Gestión declarativa de bases de datos Postgres, políticas RLS y Edge Functions en Supabase.", category: "automation", features: ["Edge Functions", "Gestión de Postgres", "Políticas RLS", "Auth y Storage"] },
+    { id: "mongo-cloud", name: "mongo-cloud", description: "Consultas complejas, pipelines de agregación y monitoreo de clústeres en MongoDB Atlas.", category: "data", features: ["Consultas Atlas", "Índices", "Pipelines de agregación", "Monitoreo de clústeres"] },
+    { id: "postgres-ops", name: "postgres-ops", description: "Control DDL avanzado, roles, optimización y vistas materializadas para PostgreSQL local/remoto.", category: "data", features: ["Ejecución DDL", "Optimización de queries", "Vistas materializadas", "Gestión de roles"] },
+    { id: "redis-cli", name: "redis-cli", description: "Administración de cachés en memoria, flujos Pub/Sub y optimización de claves en Redis.", category: "data", features: ["Caché en memoria", "Estructuras de datos", "Pub/Sub", "Evicción de claves"] },
+    { id: "elasticsearch-query", name: "elasticsearch-query", description: "Extracción e indexación escalable usando queries de Lucene para el motor Elasticsearch.", category: "data", features: ["Búsqueda full-text", "Agregaciones", "Índices invertidos", "Mapeos de campos"] },
+    { id: "kafka-produce", name: "kafka-produce", description: "Producción asíncrona, gestión de particiones y consumo de tópicos en clústeres Apache Kafka.", category: "data", features: ["Gestión de tópicos", "Consumidores de stream", "Particionamiento", "Offsets"] },
+    { id: "rabbitmq-queue", name: "rabbitmq-queue", description: "Mapeo de bindings, enrutamiento (exchanges) y colas duraderas (AMQP) en RabbitMQ.", category: "data", features: ["Exchanges y bindings", "Colas duraderas", "Mensajes Dead-Letter", "Acks manuales"] },
+    { id: "kubernetes-ops", name: "kubernetes-ops", description: "Administración unificada de clústeres K8s (pods, services, configmaps) vía kubectl/API.", category: "automation", features: ["Despliegues K8s", "Escalado de Pods", "ConfigMaps/Secrets", "Ingress y Servicios"] },
+    { id: "terraform-apply", name: "terraform-apply", description: "Automatización de la infraestructura como código (IaC), estado y planes usando Terraform.", category: "automation", features: ["Plan y Apply", "Estados remotos", "Módulos", "Gestión de variables"] },
+    { id: "ansible-play", name: "ansible-play", description: "Aprovisionamiento y despliegue automatizado de hosts remotos utilizando playbooks de Ansible.", category: "automation", features: ["Playbooks", "Inventarios", "Roles y tareas", "Ejecución idempotente"] },
+    { id: "puppet-run", name: "puppet-run", description: "Auditoría, control de estado y aplicación declarativa de catálogos mediante agentes Puppet.", category: "automation", features: ["Manifiestos", "Recursos declarativos", "Catálogos de nodos", "Reportes de estado"] },
+    { id: "chef-client", name: "chef-client", description: "Actualización y configuración automatizada de estados en nodos locales utilizando Chef.", category: "automation", features: ["Recetas y Cookbooks", "Atributos de nodos", "Data bags", "Entornos de chef"] },
+    { id: "nagios-check", name: "nagios-check", description: "Recolección de métricas históricas, estado del sistema y alertas mediante plugins de Nagios.", category: "custom", features: ["Métricas de host", "Plugins de Nagios", "Alertas de umbral", "Historial de estado"] },
+    { id: "splunk-search", name: "splunk-search", description: "Ingesta y minería de logs operativos usando consultas avanzadas (SPL) dentro de Splunk.", category: "data", features: ["Consultas SPL", "Dashboards y paneles", "Extracción de campos", "Alertas en tiempo real"] },
+    { id: "newrelic-apm", name: "newrelic-apm", description: "Métricas sintéticas, resolución de trazas y análisis de transacciones distribuidas en New Relic.", category: "data", features: ["Rendimiento de apps", "Trazas distribuidas", "Transacciones web", "Errores y excepciones"] },
+    { id: "grafana-dash", name: "grafana-dash", description: "Extracción y consulta unificada de paneles y visualizaciones de métricas TSDB en Grafana.", category: "data", features: ["Visualización TSDB", "Variables de plantilla", "Alertas visuales", "Anotaciones"] },
+    { id: "prometheus-query", name: "prometheus-query", description: "Motor de consultas vectoriales (PromQL) y resolución avanzada de alertas temporales (Alertmanager).", category: "data", features: ["PromQL", "Métricas vectoriales", "Reglas de grabación", "Alertmanager"] },
+    { id: "git-local", name: "git-local", description: "Flujos de control local en Git: rebasing inteligente, bisect automático y recuperación via reflog.", category: "custom", features: ["Rebase interactivo", "Bisect", "Reflog de rescate", "Cherry-picking"] },
+    { id: "nmap-scan", name: "nmap-scan", description: "Auditoría de perímetros de red, detección pasiva/activa de SO y escaneo de vulnerabilidades.", category: "custom", features: ["Descubrimiento de red", "Escaneo de puertos", "Detección de SO", "Scripts NSE"] },
+    { id: "wireshark-cap", name: "wireshark-cap", description: "Captura y desensamblado forense de trazas de paquetes de red a nivel de protocolo (pcap).", category: "custom", features: ["Filtros de captura", "Inspección de protocolos", "Seguimiento de TCP", "Análisis de pcap"] },
+    { id: "burpsuite-proxy", name: "burpsuite-proxy", description: "Automatización de intercepción, fuzzing y auditoría activa de tráfico HTTP para pruebas de pentesting.", category: "custom", features: ["Intercepción HTTP", "Repetición de peticiones", "Fuzzing de parámetros", "Detección de vulns"] },
+    {
+        id: "analyze_spreadsheet",
+        name: "Spreadsheet Analyzer",
+        description: "Analyze Excel or CSV spreadsheet files. Performs data analysis, generates insights, charts, and summaries from spreadsheet data.",
+        category: "data",
+        features: [
+            "Data extraction and summarization",
+            "Chart and graph generation",
+            "Support for .xlsx and .csv formats",
+            "Custom analysis instructions"
+        ]
+    },
+    {
+        id: "web_search",
+        name: "Web & Academic Search",
+        description: "Search the web for information. Can search general web or academic/scholarly sources like Google Scholar and scientific indexes.",
+        category: "data",
+        features: [
+            "Real-time web browsing",
+            "Scientific article search",
+            "Academic source filtering",
+            "Content extraction"
+        ]
+    },
+    {
+        id: "generate_image",
+        name: "AI Image Generator",
+        description: "Generate an image using Gemini AI based on a text description.",
+        category: "custom",
+        features: [
+            "High-quality image synthesis",
+            "Prompt-based generation",
+            "Base64 image encoding",
+            "Artifact creation"
+        ]
+    },
+    {
+        id: "browse_url",
+        name: "Headless Browser",
+        description: "Navigate to a URL using a headless browser. Returns page content, title, and optionally a screenshot.",
+        category: "automation",
+        features: [
+            "Headless page rendering",
+            "HTML content extraction",
+            "Screenshot capture",
+            "Privacy-preserving fallback mode"
+        ]
+    },
+    {
+        id: "generate_document",
+        name: "Office Document Generator",
+        description: "Generate Office documents (Word, Excel, PowerPoint, CSV, PDF) from text or structured data.",
+        category: "documents",
+        features: [
+            "Word document (.docx) generation",
+            "Excel spreadsheet (.xlsx) generation",
+            "PowerPoint presentation (.pptx) creation",
+            "CSV/PDF support",
+            "Automatic cloud library upload"
+        ]
+    },
+    {
+        id: "math_render",
+        name: "Math Renderer (KaTeX)",
+        description: "Render and structure mathematical solutions using LaTeX/KaTeX, with optional document export.",
+        category: "documents",
+        features: [
+            "KaTeX/LaTeX rendering",
+            "Step-by-step math formatting",
+            "Inline and display equations",
+            "Optional Word/PDF export"
+        ]
+    },
+    {
+        id: "spawn_subagent",
+        name: "Nested Subagents (Clawi Integration)",
+        description: "Enables the AI to spawn nested, autonomous subagents to handle complex multi-step routines in the background.",
+        category: "automation",
+        features: [
+            "Autonomous routine execution",
+            "Multi-step task delegation",
+            "Parallelized agent workflows",
+            "Clawi compatibility"
+        ]
+    },
+    {
+        id: "memory_search",
+        name: "Semantic Memory (RAG)",
+        description: "Retrieval-Augmented Generation context engine. Searches past conversations, facts, and user preferences semantically.",
+        category: "data",
+        features: [
+            "Vector database semantic search",
+            "Keyword hybrid matching",
+            "Temporal decay handling",
+            "Long-term memory persistence"
+        ]
+    }
+];

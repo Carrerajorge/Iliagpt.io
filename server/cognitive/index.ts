@@ -1,0 +1,229 @@
+/**
+ * Cognitive Middleware — public surface.
+ *
+ * Exports the entire cognitive layer in one place. Callers should
+ * import from `@/server/cognitive` (or wherever the path resolves)
+ * rather than reaching into individual files — this lets us
+ * refactor file boundaries without breaking consumers.
+ */
+
+// Type contracts (the SHAPE LAYER)
+export type {
+  CognitiveIntent,
+  IntentClassification,
+  CognitiveRequest,
+  CognitiveResponse,
+  CognitiveTelemetry,
+  RoutingDecision,
+  ValidationReport,
+  ValidationIssue,
+  ValidationSeverity,
+  ProviderAdapter,
+  ProviderMessage,
+  ProviderMessageRole,
+  ProviderToolDescriptor,
+  ProviderToolCall,
+  ProviderResponse,
+  ProviderFinishReason,
+  ProviderUsage,
+  ProviderStreamChunk,
+  NormalizedProviderRequest,
+  CognitiveStreamEvent,
+} from "./types";
+
+// Intent router
+export { classifyIntent, evaluateRules } from "./intentRouter";
+
+// Output validator
+export { validateOutput, type ValidateOutputOptions } from "./outputValidator";
+
+// Context enrichment layer (Turn C)
+export type {
+  ContextChunk,
+  ContextSourceKind,
+  ContextBundle,
+  ContextTelemetry,
+  MemoryRecord,
+  MemoryStore,
+  DocumentChunkRecord,
+  DocumentStore,
+  ContextEnricherOptions,
+} from "./context";
+export { enrichContext, renderContextBundle } from "./contextEnricher";
+export {
+  InMemoryMemoryStore,
+  InMemoryDocumentStore,
+  tokenizeForContext,
+  scoreQueryAgainst,
+  type InMemoryMemoryStoreOptions,
+  type InMemoryDocumentStoreOptions,
+  type InMemoryDocument,
+} from "./contextStores";
+
+// Tool execution layer (Turn D)
+export type {
+  ToolExecutionContext,
+  ToolExecutionOutcome,
+  ToolExecutionErrorCode,
+  ToolHandler,
+  RegisteredTool,
+  ToolRegistry,
+} from "./tools";
+export {
+  InMemoryToolRegistry,
+  DEFAULT_TOOL_TIMEOUT_MS,
+  serializeToolOutcomeForModel,
+} from "./tools";
+export type { ToolExecutionOutcomeLike } from "./types";
+
+// Rate limit + circuit breaker layer (Turn E)
+export type {
+  RateLimiter,
+  RateLimitCheckResult,
+  TokenBucketOptions,
+} from "./rateLimit";
+export {
+  InMemoryTokenBucketLimiter,
+  UnboundedRateLimiter,
+  defaultRateLimitKey,
+} from "./rateLimit";
+export type {
+  CircuitBreakerState,
+  CircuitBreakerOptions,
+  CircuitBreakerStatus,
+  CircuitBreakerRegistryOptions,
+} from "./circuitBreaker";
+export {
+  CircuitBreaker,
+  CircuitBreakerRegistry,
+} from "./circuitBreaker";
+
+// OpenTelemetry tracing facade (Turn F)
+export {
+  getCognitiveTracer,
+  resetCognitiveTracerCache,
+  withCognitiveSpan,
+  withCognitiveSpanSync,
+  CognitiveSpanNames,
+  CognitiveAttributes,
+  COGNITIVE_TRACER_NAME,
+  COGNITIVE_TRACER_VERSION,
+  type CognitiveSpanName,
+  type CognitiveAttributeKey,
+} from "./tracing";
+
+// Capability registry + catalog (Turn I)
+export type {
+  CapabilityCategory,
+  CapabilityDescriptor,
+  CapabilityContext,
+  CapabilityHandler,
+  CapabilityHandlerResult,
+  CapabilityInvocation,
+  CapabilityErrorCode,
+  CapabilityRegistry,
+} from "./capabilities";
+export {
+  InMemoryCapabilityRegistry,
+  DEFAULT_CAPABILITY_TIMEOUT_MS,
+  CAPABILITY_CATEGORY_LABELS,
+} from "./capabilities";
+export {
+  buildDefaultCapabilityCatalog,
+  summarizeDefaultCatalog,
+  DEFAULT_CAPABILITY_DESCRIPTORS,
+  type BuildDefaultCapabilityCatalogOptions,
+} from "./capabilityCatalog";
+
+// Artifact extraction + session layer (Turn H)
+export type {
+  CognitiveArtifact,
+  CodeArtifact,
+  DiagramArtifact,
+  TableArtifact,
+  MarkdownArtifact,
+} from "./artifacts";
+export { extractArtifacts } from "./artifacts";
+export type {
+  CognitiveSessionOptions,
+  CognitiveSessionSnapshot,
+} from "./session";
+export { CognitiveSession } from "./session";
+
+// Run persistence layer (Turn G)
+export type {
+  RunRepository,
+  CognitiveRunRecord,
+  InMemoryRunRepositoryOptions,
+} from "./persistence";
+export {
+  InMemoryRunRepository,
+  projectRequestResponseToRunRecord,
+} from "./persistence";
+export type {
+  PostgresRunRepositoryOptions,
+  RunRepositoryDbHandle,
+} from "./postgresRunRepository";
+export {
+  PostgresRunRepository,
+  cognitiveRunRecords,
+} from "./postgresRunRepository";
+export type {
+  PgMemoryStoreAdapterOptions,
+  PgVectorMemoryStoreLike,
+  PgMemoryLike,
+  PgMemorySearchOptions,
+  PgMemoryStoreOptions,
+} from "./pgMemoryStoreAdapter";
+export {
+  PgMemoryStoreAdapter,
+  convertPgMemoryToCognitive,
+} from "./pgMemoryStoreAdapter";
+
+// Chat kernel preflight
+export type {
+  ChatCognitiveWorkflow,
+  ChatCognitiveKernelOptions,
+  ChatCognitiveKernelDecision,
+} from "./chatKernel";
+export { createChatCognitiveKernelDecision } from "./chatKernel";
+
+// Orchestrator
+export {
+  CognitiveMiddleware,
+  type CognitiveMiddlewareOptions,
+  selectProvider,
+  buildNormalizedRequest,
+  callProviderWithRetry,
+} from "./cognitiveMiddleware";
+
+// Mock provider adapters (for tests + smoke tests)
+export {
+  EchoMockAdapter,
+  ScriptedMockAdapter,
+  FailingMockAdapter,
+  AbortableMockAdapter,
+  ToolEmittingMockAdapter,
+  StreamingMockAdapter,
+  type StreamingMockAdapterOptions,
+} from "./providerAdapters/mockAdapter";
+
+// Real provider adapters (Turn A of the cognitive roadmap)
+export {
+  SmartRouterAdapter,
+  type SmartRouterAdapterOptions,
+  type GatewayMessage,
+  type GatewayRequestOptions,
+  type GatewayResponse,
+  type GatewayResponseUsage,
+  type GatewayResponseStatus,
+  type GatewayIncompleteDetails,
+  type GatewayChatFn,
+  mapGatewayFinishReason,
+  translateGatewayResponse,
+} from "./providerAdapters/smartRouterAdapter";
+
+export {
+  InHouseGptAdapter,
+  type InHouseGptAdapterOptions,
+} from "./providerAdapters/inHouseGptAdapter";

@@ -1,0 +1,9 @@
+This is a sample text document for testing purposes.
+
+It contains multiple paragraphs to verify that the document batch processor
+correctly handles text files and creates appropriate chunks.
+
+The processor should normalize this content and extract tokens properly.
+This allows us to verify the bytesRead, tokensExtracted, and parseTimeMs statistics.
+
+Final paragraph with some special characters: café, naïve, résumé.

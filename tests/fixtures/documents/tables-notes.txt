@@ -1,0 +1,23 @@
+DOCUMENT WITH TABLES AND NOTES
+
+TABLE 1: Sales Data
++--------+----------+-------+
+| Region | Revenue  | Growth|
++--------+----------+-------+
+| North  | $1.2M    | 15%   |
+| South  | $0.8M    | 12%   |
+| East   | $1.5M    | 18%   |
+| West   | $0.9M    | 10%   |
++--------+----------+-------+
+
+NOTE 1: Revenue figures are Q4 2025 estimates.
+NOTE 2: Growth percentages are YoY comparisons.
+
+TABLE 2: Product Performance
+| Product | Units | Price |
+|---------|-------|-------|
+| Alpha   | 5000  | $99   |
+| Beta    | 3200  | $149  |
+| Gamma   | 1800  | $199  |
+
+FOOTNOTE: All prices are in USD and exclude taxes.

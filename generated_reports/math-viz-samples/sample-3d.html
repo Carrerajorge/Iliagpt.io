@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>z = x² + y²</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: monospace; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
+  canvas { width: 100%; border-radius: 8px; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  .controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #94a3b8; }
+  button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+  button.active { background: #4f46e5; border-color: #4f46e5; }
+  button:hover { background: #334155; }
+  select { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 4px 6px; font-size: 11px; font-family: monospace; }
+  h1 { font-size: 14px; font-weight: bold; color: #e2e8f0; }
+</style>
+</head>
+<body>
+<h1>🌐 z = x² + y²</h1>
+<canvas id="c"></canvas>
+<div class="controls">
+  <span>Drag to rotate · Scroll to zoom</span>
+  <div style="display:flex;gap:6px;align-items:center">
+    <button id="wfBtn" onclick="toggleWireframe()">Wireframe</button>
+    <select id="schemeSelect" onchange="scheme=this.value;draw()">
+      <option value="viridis">Viridis</option>
+      <option value="plasma">Plasma</option>
+      <option value="cool">Cool</option>
+      <option value="warm">Warm</option>
+    </select>
+    <button onclick="resetView()">Reset</button>
+  </div>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const EXPR = "x^2+y^2";
+const TITLE = "z = x² + y²";
+const X_MIN=-5, X_MAX=5, Y_MIN=-5, Y_MAX=5;
+const N = 40;
+let rotX=0.5, rotY=0.3, zoom=1, wireframe=false, scheme='viridis';
+let isDragging=false, lastMx=0, lastMy=0;
+
+function evalXY(expr, x, y) {
+  try {
+    const c = expr.replace(/\^/g,'**')
+      .replace(/\bx\b/g,'('+x+')')
+      .replace(/\by\b/g,'('+y+')')
+      .replace(/\bpi\b/gi,Math.PI)
+      .replace(/\bsin\(/g,'Math.sin(')
+      .replace(/\bcos\(/g,'Math.cos(')
+      .replace(/\btan\(/g,'Math.tan(')
+      .replace(/\bsqrt\(/g,'Math.sqrt(')
+      .replace(/\babs\(/g,'Math.abs(')
+      .replace(/\bexp\(/g,'Math.exp(')
+      .replace(/\bpow\(/g,'Math.pow(');
+    const f = new Function('Math','return '+c);
+    const r = f(Math);
+    return (typeof r==='number'&&isFinite(r))?r:NaN;
+  } catch(e){return NaN;}
+}
+
+function colorFromT(t, sch) {
+  switch(sch) {
+    case 'plasma': return [Math.round(Math.min(255,Math.max(0,255*(0.05+2*t)))), Math.round(255*Math.min(1,4*t*(1-t)*0.3)), Math.round(255*Math.max(0,0.7-t))];
+    case 'cool': return [Math.round(255*t), Math.round(255*(1-t)), 255];
+    case 'warm': return [255, Math.round(255*(1-t)), Math.round(100*(1-t))];
+    default: return [Math.round(Math.min(255,Math.max(0,255*(-0.5+2.5*t)))), Math.round(255*Math.min(1,0.8*Math.sin(Math.PI*t))), Math.round(255*Math.max(0,0.9-t))];
+  }
+}
+
+function buildGrid() {
+  const grid=[], xVals=[], yVals=[];
+  let zMin=Infinity, zMax=-Infinity;
+  for(let i=0;i<=N;i++) xVals.push(X_MIN+(i/N)*(X_MAX-X_MIN));
+  for(let j=0;j<=N;j++) yVals.push(Y_MIN+(j/N)*(Y_MAX-Y_MIN));
+  for(let i=0;i<=N;i++){
+    grid[i]=[];
+    for(let j=0;j<=N;j++){
+      const z=evalXY(EXPR,xVals[i],yVals[j]);
+      const zs=isNaN(z)?0:z;
+      grid[i][j]=zs;
+      if(!isNaN(z)){zMin=Math.min(zMin,z);zMax=Math.max(zMax,z);}
+    }
+  }
+  if(!isFinite(zMin))zMin=-1;
+  if(!isFinite(zMax))zMax=1;
+  return {grid,xVals,yVals,zMin,zMax};
+}
+
+let cachedGrid = null;
+function getGrid(){return cachedGrid||(cachedGrid=buildGrid());}
+
+function project(ix,jy,grid,zMin,zRange,W,H){
+  const xR=X_MAX-X_MIN, yR=Y_MAX-Y_MIN;
+  const nx=(ix/N-0.5)*xR, ny=(jy/N-0.5)*yR;
+  const nz=((grid[ix][jy]-zMin)/zRange-0.5)*xR;
+  const cosX=Math.cos(rotX), sinX=Math.sin(rotX);
+  const cosY=Math.cos(rotY), sinY=Math.sin(rotY);
+  const rx=nx*cosY-nz*sinY, rz=nx*sinY+nz*cosY;
+  const ry1=ny*cosX-rz*sinX, rz2=ny*sinX+rz*cosX;
+  const scale=zoom*(Math.min(W,H))/(3.5*(X_MAX-X_MIN));
+  const persp=4/(4+rz2);
+  return [W/2+rx*scale*persp, H/2-ry1*scale*persp, grid[ix][jy]];
+}
+
+function draw(){
+  const W=canvas.width, H=canvas.height;
+  const {grid,zMin,zMax}=getGrid();
+  const zRange=zMax-zMin||1;
+  ctx.fillStyle='#0f172a'; ctx.fillRect(0,0,W,H);
+
+  const faces=[];
+  for(let i=0;i<N;i++) for(let j=0;j<N;j++){
+    const [p00x,p00y,z00]=project(i,j,grid,zMin,zRange,W,H);
+    const [p10x,p10y,z10]=project(i+1,j,grid,zMin,zRange,W,H);
+    const [p11x,p11y,z11]=project(i+1,j+1,grid,zMin,zRange,W,H);
+    const [p01x,p01y,z01]=project(i,j+1,grid,zMin,zRange,W,H);
+    const avgZ=(z00+z10+z11+z01)/4;
+    faces.push({pts:[[p00x,p00y],[p10x,p10y],[p11x,p11y],[p01x,p01y]],avgZ,t:(avgZ-zMin)/zRange});
+  }
+  faces.sort((a,b)=>a.avgZ-b.avgZ);
+  for(const f of faces){
+    const [r,g,b]=colorFromT(f.t,scheme);
+    ctx.beginPath(); ctx.moveTo(f.pts[0][0],f.pts[0][1]);
+    for(let k=1;k<f.pts.length;k++) ctx.lineTo(f.pts[k][0],f.pts[k][1]);
+    ctx.closePath();
+    if(!wireframe){ctx.fillStyle='rgba('+r+','+g+','+b+',0.85)';ctx.fill();}
+    ctx.strokeStyle=wireframe?'rgba('+r+','+g+','+b+',0.9)':'rgba('+(r-40)+','+(g-40)+','+(b-40)+',0.3)';
+    ctx.lineWidth=wireframe?1:0.5; ctx.stroke();
+  }
+  ctx.fillStyle='#e2e8f0'; ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(TITLE,W/2,18);
+  ctx.fillStyle='#64748b'; ctx.font='11px monospace'; ctx.textAlign='left';
+  ctx.fillText('z = '+EXPR, 10, H-10);
+}
+
+function toggleWireframe(){wireframe=!wireframe;document.getElementById('wfBtn').classList.toggle('active',wireframe);draw();}
+function resetView(){rotX=0.5;rotY=0.3;zoom=1;draw();}
+
+canvas.addEventListener('mousedown',e=>{isDragging=true;lastMx=e.clientX;lastMy=e.clientY;canvas.classList.add('dragging');});
+canvas.addEventListener('mousemove',e=>{
+  if(!isDragging)return;
+  rotY+=(e.clientX-lastMx)*0.01;
+  rotX+=(e.clientY-lastMy)*0.01;
+  lastMx=e.clientX;lastMy=e.clientY;draw();
+});
+canvas.addEventListener('mouseup',()=>{isDragging=false;canvas.classList.remove('dragging');});
+canvas.addEventListener('mouseleave',()=>{isDragging=false;canvas.classList.remove('dragging');});
+canvas.addEventListener('wheel',e=>{e.preventDefault();zoom*=e.deltaY>0?0.9:1.1;zoom=Math.min(Math.max(zoom,0.2),5);draw();},{passive:false});
+
+function resize(){
+  canvas.width=canvas.offsetWidth*devicePixelRatio;
+  const h=Math.min(460,Math.round(canvas.offsetWidth*0.7));
+  canvas.height=h*devicePixelRatio;
+  canvas.style.height=h+'px';
+  cachedGrid=null; draw();
+}
+new ResizeObserver(resize).observe(canvas);
+resize();
+</script>
+</body>
+</html>

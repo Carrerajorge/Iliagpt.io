@@ -1,0 +1,289 @@
+{
+  "timestamp": "2026-01-06T17:28:39.006Z",
+  "totalScenarios": 6,
+  "passed": 5,
+  "failed": 1,
+  "scenarios": [
+    {
+      "name": "web_search_real_results",
+      "success": false,
+      "durationMs": 295,
+      "artifacts": [],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "query": "OpenAI GPT-4 release date 2023",
+            "resultsCount": 0,
+            "results": [],
+            "source": "wikipedia-opensearch",
+            "searchPerformed": true,
+            "timestamp": "2026-01-06T17:28:37.675Z"
+          },
+          "message": "Found 0 results for \"OpenAI GPT-4 release date 2023\""
+        },
+        "trace": {
+          "requestId": "91170aa1-38b4-4279-ad7d-f383136e14a8",
+          "toolName": "web_search",
+          "durationMs": 187,
+          "status": "success",
+          "retryCount": 0
+        }
+      },
+      "error": "Results array is empty - no real search performed"
+    },
+    {
+      "name": "data_analyze_numeric_results",
+      "success": true,
+      "durationMs": 9,
+      "artifacts": [],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "count": 10,
+            "sum": 325,
+            "mean": 32.5,
+            "median": 32.5,
+            "min": 10,
+            "max": 55,
+            "range": 45,
+            "variance": 206.25,
+            "stdDev": 14.3614,
+            "operation": "statistics",
+            "timestamp": "2026-01-06T17:28:37.693Z"
+          },
+          "message": "Analyzed 10 data points: mean=32.5, median=32.5"
+        },
+        "trace": {
+          "requestId": "b91ec017-ce0f-44bc-8321-44301e5f125d",
+          "toolName": "data_analyze",
+          "durationMs": 0,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "document_create_file_artifact",
+      "success": true,
+      "durationMs": 6,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/E2E_Test_Document_1767720517700.txt"
+      ],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "documentId": "3677ed76-0102-42a5-85c8-a2176a8631cf",
+            "title": "E2E_Test_Document",
+            "type": "txt",
+            "filePath": "/home/runner/workspace/artifacts/E2E_Test_Document_1767720517700.txt",
+            "fileSize": 92,
+            "created": "2026-01-06T17:28:37.701Z"
+          },
+          "message": "Created document \"E2E_Test_Document\" at /home/runner/workspace/artifacts/E2E_Test_Document_1767720517700.txt"
+        },
+        "trace": {
+          "requestId": "cd6acb79-45f6-4706-9908-9e960be14d80",
+          "toolName": "document_create",
+          "durationMs": 1,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "pdf_generate_file_artifact",
+      "success": true,
+      "durationMs": 5,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/E2E_Test_PDF_1767720517707.pdf"
+      ],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "pdfId": "88a07956-24a7-444b-85b7-0b4d24942362",
+            "title": "E2E_Test_PDF",
+            "filePath": "/home/runner/workspace/artifacts/E2E_Test_PDF_1767720517707.pdf",
+            "fileSize": 637,
+            "pageCount": 1,
+            "created": "2026-01-06T17:28:37.707Z"
+          },
+          "message": "Generated PDF \"E2E_Test_PDF\" at /home/runner/workspace/artifacts/E2E_Test_PDF_1767720517707.pdf"
+        },
+        "trace": {
+          "requestId": "86f462a8-b623-45fa-99b1-9165ea3f1b01",
+          "toolName": "pdf_generate",
+          "durationMs": 0,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "browse_url_html_capture",
+      "success": true,
+      "durationMs": 1287,
+      "artifacts": [],
+      "evidence": {
+        "success": true,
+        "data": {
+          "success": true,
+          "data": {
+            "url": "https://httpbin.org/html",
+            "title": "No title",
+            "status": 200,
+            "contentLength": 3739,
+            "textPreview": "Herman Melville - Moby-Dick Availing himself of the mild, summer-cool weather that now reigned in these latitudes, and in preparation for the peculiarly active pursuits shortly to be anticipated, Perth, the begrimed, blistered old blacksmith, had not removed his portable forge to the hold again, after concluding his contributory work for Ahab's leg, but still retained it on deck, fast lashed to ringbolts by the foremast; being now almost incessantly invoked by the headsmen, and harpooneers, and ",
+            "fullTextLength": 3594,
+            "timestamp": "2026-01-06T17:28:38.997Z"
+          },
+          "message": "Fetched \"No title\" (3739 bytes)"
+        },
+        "trace": {
+          "requestId": "7a4d01f4-1c85-4099-9d7c-8c3ede343b61",
+          "toolName": "browse_url",
+          "durationMs": 1281,
+          "status": "success",
+          "retryCount": 0
+        }
+      }
+    },
+    {
+      "name": "workflow_with_failure_handling",
+      "success": true,
+      "durationMs": 6,
+      "artifacts": [
+        "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519003.txt",
+        "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519004.pdf"
+      ],
+      "evidence": {
+        "success": false,
+        "type": "workflow",
+        "intent": {
+          "query": "search for nonexistent_random_term_xyz123 and create document",
+          "intent": "document",
+          "confidence": 0.8,
+          "suggestedAgent": "Document",
+          "suggestedTools": [
+            "document_create",
+            "pdf_generate",
+            "slides_create",
+            "template_fill"
+          ],
+          "complexity": "complex"
+        },
+        "evidence": [
+          {
+            "stepId": "step_1",
+            "toolName": "document_create",
+            "input": {
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "content": "search for nonexistent_random_term_xyz123 and create document",
+              "type": "txt"
+            },
+            "output": {
+              "documentId": "4b941645-0a71-4cf6-88f3-c1d33393edcc",
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "type": "txt",
+              "filePath": "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519003.txt",
+              "fileSize": 164,
+              "created": "2026-01-06T17:28:39.003Z"
+            },
+            "schemaValidation": "pass",
+            "requestId": "c849594a-04df-4019-841b-5cf1b1ad00d4",
+            "durationMs": 0,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": true,
+            "status": "completed",
+            "artifacts": [
+              "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519003.txt"
+            ]
+          },
+          {
+            "stepId": "step_2",
+            "toolName": "pdf_generate",
+            "input": {
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "content": "search for nonexistent_random_term_xyz123 and create document"
+            },
+            "output": {
+              "pdfId": "84eccdc1-890c-4376-831a-88b6e4618558",
+              "title": "search for nonexistent_random_term_xyz123 and crea",
+              "filePath": "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519004.pdf",
+              "fileSize": 711,
+              "pageCount": 1,
+              "created": "2026-01-06T17:28:39.004Z"
+            },
+            "schemaValidation": "pass",
+            "requestId": "1d9a9ba7-948e-4f63-8e2a-3f58ebe4f55d",
+            "durationMs": 0,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": true,
+            "status": "completed",
+            "artifacts": [
+              "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519004.pdf"
+            ]
+          },
+          {
+            "stepId": "step_3",
+            "toolName": "slides_create",
+            "input": {
+              "query": "search for nonexistent_random_term_xyz123 and create document"
+            },
+            "output": null,
+            "schemaValidation": "fail",
+            "requestId": "e77755fb-9256-4a72-b51f-74513a476bcb",
+            "durationMs": 0,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": false,
+            "status": "failed"
+          },
+          {
+            "stepId": "step_4",
+            "toolName": "template_fill",
+            "input": {
+              "query": "search for nonexistent_random_term_xyz123 and create document"
+            },
+            "output": null,
+            "schemaValidation": "fail",
+            "requestId": "f0dfa0b0-55fb-42aa-bbf4-38cdeca751fa",
+            "durationMs": 1,
+            "retryCount": 0,
+            "replanEvents": [],
+            "validationPassed": false,
+            "status": "failed"
+          }
+        ],
+        "summary": {
+          "totalSteps": 4,
+          "completedSteps": 2,
+          "failedSteps": 2,
+          "skippedSteps": 0,
+          "totalDurationMs": 3,
+          "replans": 0,
+          "allValidationsPassed": false
+        },
+        "artifacts": [
+          "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519003.txt",
+          "/home/runner/workspace/artifacts/search_for_nonexistent_random_term_xyz123_and_crea_1767720519004.pdf"
+        ],
+        "firstFailure": {
+          "stepId": "step_3",
+          "toolName": "slides_create",
+          "errorStack": "Input validation failed: [\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"undefined\",\n    \"path\": [\n      \"title\"\n    ],\n    \"message\": \"Required\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"array\",\n    \"received\": \"undefined\",\n    \"path\": [\n      \"slides\"\n    ],\n    \"message\": \"Required\"\n  }\n]"
+        }
+      }
+    }
+  ],
+  "exitCode": 1
+}

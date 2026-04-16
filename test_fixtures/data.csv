@@ -1,0 +1,16 @@
+id,name,category,price,stock,sku
+1,"Laptop Pro 15",Electronics,1299.99,45,LP15-001
+2,"Wireless Mouse",Accessories,29.99,150,WM-002
+3,"Mechanical Keyboard",Accessories,149.99,75,MK-003
+4,"USB-C Hub",Accessories,49.99,200,UCH-004
+5,"4K Monitor",Electronics,449.99,30,M4K-005
+6,"Noise Canceling Headphones",Audio,299.99,60,NCH-006
+7,"Webcam HD",Electronics,79.99,100,WCHD-007
+8,"External SSD 1TB",Storage,119.99,80,SSD1T-008
+9,"Graphics Tablet",Electronics,199.99,25,GT-009
+10,"Desk Lamp LED",Office,39.99,120,DL-010
+11,"Ergonomic Chair",Furniture,349.99,15,EC-011
+12,"Standing Desk",Furniture,599.99,10,SD-012
+13,"Monitor Arm",Accessories,89.99,50,MA-013
+14,"Cable Management Kit",Accessories,24.99,200,CMK-014
+15,"Wireless Charger",Accessories,34.99,175,WC-015

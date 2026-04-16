@@ -1,0 +1,1157 @@
+================================================================================
+WEB RETRIEVAL V2 CERTIFICATION REPORT
+================================================================================
+Generated: 2026-01-02T21:13:16.297Z
+Total Duration: 24.86s
+Overall Result: FAILED
+
+────────────────────────────────────────────────────────────────────────────────
+PHASE: UNIT_TESTS
+Result: PASSED
+Duration: 17.39s
+Details: {
+  "testsPassed": 4,
+  "testsFailed": 0,
+  "exitCode": 0
+}
+
+Output:
+
+[1m[46m RUN [49m[22m [36mv4.0.16 [39m[90m/home/runner/workspace[39m
+
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould generate 3-6 queries from a simple prompt[32m 5[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould extract entities from prompts[32m 5[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould extract keywords and remove stop words[32m 17[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould detect factual intent[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould detect comparison intent[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould detect how-to intent[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould detect news intent[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould detect recency for recent queries[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould generate unique query hash[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould prioritize primary query highest[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould respect maxQueries limit[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalPlanner[2m > [22mplan()[2m > [22mshould handle Spanish prompts[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mConcurrencyPool[2m > [22mshould execute all tasks and return results[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mConcurrencyPool[2m > [22mshould respect concurrency limit[32m 154[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mConcurrencyPool[2m > [22mshould handle task failures gracefully[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mConcurrencyPool[2m > [22mshould handle task timeouts[32m 52[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mConcurrencyPool[2m > [22mshould execute tasks by priority[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mConcurrencyPool[2m > [22mshould support streaming results[32m 41[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mConcurrencyPool[2m > [22mshould track progress correctly[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould store and retrieve entries by URL[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould return null for missing entries[32m 2[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool-retrieval.test.ts[2m > [22m[2mResponseCache[2m > [22m[2mshould reject content larger than maxContentSizeBytes
+[22m[39m[ResponseCache] Content too large for caching: 200 bytes (max: 100)
+
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould expire entries after TTL[32m 101[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould track cache hits and misses[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould support conditional headers for revalidation[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould handle 304 Not Modified responses[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould index by query hash[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould evict oldest entries when full[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould invalidate entries[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould reject content larger than maxContentSizeBytes[32m 4[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould evict entries when memory limit exceeded[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould track memory correctly on clear[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould track memory correctly when entries expire on get()[32m 100[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mResponseCache[2m > [22mshould generate consistent URL hashes[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould filter content by relevance to query[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould extract key facts from content[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould score chunks with more matching terms higher[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould handle empty content[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould respect minimum score threshold[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould extract answer for questions[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould generate summary from top chunks[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRelevanceFilter[2m > [22mshould combine relevant content from multiple sources[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould record metrics[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould calculate SLA report[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould track latency percentiles correctly[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould generate latency histogram[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould break down by method[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould check SLA compliance[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould respect max entries limit[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mRetrievalMetricsCollector[2m > [22mshould record from FastFirstResult format[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mIntegration: Slow sites and error handling[2m > [22mshould handle simulated slow response gracefully[32m 101[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mIntegration: Slow sites and error handling[2m > [22mshould handle simulated 429 rate limit errors[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mCitation validation[2m > [22mshould extract citations that answer the query[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mCitation validation[2m > [22mshould validate that citations are from the content[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-retrieval.test.ts[2m > [22mCitation validation[2m > [22mshould score sources by how well they answer the query[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mTenant Data Isolation[2m > [22mshould isolate cache entries between different tenants[32m 7[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mTenant Data Isolation[2m > [22mshould prevent tenant A from accessing tenant B's cached data[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mTenant Data Isolation[2m > [22mshould allow same URL to be cached independently per tenant[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mTenant Data Isolation[2m > [22mshould not allow access to tenant data without providing tenantId[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mGlobal Cache Independence[2m > [22mshould keep global cache separate from tenant-specific cache[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mGlobal Cache Independence[2m > [22mshould not expose global cache entries to tenants[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mGlobal Cache Independence[2m > [22mshould not expose tenant entries when accessing without tenantId[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mGlobal Cache Independence[2m > [22mshould maintain separate hit/miss counts for global vs tenant access[32m 5[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22minvalidateByTenant[2m > [22mshould only remove entries for the specified tenant[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22minvalidateByTenant[2m > [22mshould return 0 when invalidating non-existent tenant[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22minvalidateByTenant[2m > [22mshould not affect other tenants when invalidating one[32m 23[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22minvalidateByTenant[2m > [22mshould clean up tenant stats after invalidation[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mgetStatsByTenant[2m > [22mshould return correct per-tenant metrics[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mgetStatsByTenant[2m > [22mshould return zero stats for non-existent tenant[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mgetStatsByTenant[2m > [22mshould not include expired entries in tenant stats[32m 101[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mgetStatsByTenant[2m > [22mshould track stats independently per tenant[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mBackward Compatibility[2m > [22mshould work without tenantId (global cache)[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mBackward Compatibility[2m > [22mshould support all existing methods without tenantId[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mBackward Compatibility[2m > [22mshould maintain existing invalidate behavior[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mPII Redaction[2m > [22mshould hash tenant IDs for cache keys[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mPII Redaction[2m > [22mshould generate consistent hashes for same tenant ID[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mPII Redaction[2m > [22mshould generate different hashes for different tenant IDs[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mEdge Cases[2m > [22mshould handle empty tenant ID gracefully[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mEdge Cases[2m > [22mshould handle special characters in tenant ID[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mEdge Cases[2m > [22mshould respect memory limits across tenants[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts[2m > [22mResponseCache Tenant Isolation[2m > [22mEdge Cases[2m > [22mshould handle concurrent access patterns[32m 1[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mcanonicalizeUrl[2m > [22m[2medge cases[2m > [22m[2mshould throw error for empty URL
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'too_small'[39m,
+    minimum: [33m1[39m,
+    type: [32m'string'[39m,
+    inclusive: [33mtrue[39m,
+    exact: [33mfalse[39m,
+    message: [32m'String must contain at least 1 character(s)'[39m,
+    path: []
+  }
+]
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mUTM parameter removal[2m > [22mshould remove utm_source parameter[32m 4[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mUTM parameter removal[2m > [22mshould remove utm_medium parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mUTM parameter removal[2m > [22mshould remove utm_campaign parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mUTM parameter removal[2m > [22mshould remove utm_term parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mUTM parameter removal[2m > [22mshould remove utm_content parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mUTM parameter removal[2m > [22mshould remove multiple utm parameters at once[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mUTM parameter removal[2m > [22mshould preserve non-tracking parameters while removing utm params[32m 17[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtracking parameter removal[2m > [22mshould remove fbclid parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtracking parameter removal[2m > [22mshould remove gclid parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtracking parameter removal[2m > [22mshould remove ref parameter[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtracking parameter removal[2m > [22mshould remove source parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtracking parameter removal[2m > [22mshould remove msclkid parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtracking parameter removal[2m > [22mshould remove _ga parameter[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtracking parameter removal[2m > [22mshould remove parameters with tracking prefixes[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mprotocol normalization[2m > [22mshould add https:// to URLs without protocol[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mprotocol normalization[2m > [22mshould keep existing https:// protocol[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mprotocol normalization[2m > [22mshould keep http:// protocol (does not upgrade)[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mprotocol normalization[2m > [22mshould lowercase protocol[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mdomain normalization[2m > [22mshould lowercase domain[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mdomain normalization[2m > [22mshould remove www. prefix[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mdomain normalization[2m > [22mshould handle mixed case with www[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtrailing slash removal[2m > [22mshould remove trailing slash from path[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtrailing slash removal[2m > [22mshould keep root path as single slash[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mtrailing slash removal[2m > [22mshould remove multiple consecutive slashes[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mhash fragment removal[2m > [22mshould remove hash fragment[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mhash fragment removal[2m > [22mshould remove hash fragment with query params[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mport normalization[2m > [22mshould remove default https port 443[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mport normalization[2m > [22mshould remove default http port 80[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mport normalization[2m > [22mshould keep non-default ports[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22mquery parameter sorting[2m > [22mshould sort query parameters alphabetically[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould throw error for empty URL[32m 94[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mcanonicalizeUrl[2m > [22m[2medge cases[2m > [22m[2mshould throw error for null URL
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'invalid_type'[39m,
+    expected: [32m'string'[39m,
+    received: [32m'null'[39m,
+    path: [],
+    message: [32m'Expected string, received null'[39m
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mcanonicalizeUrl[2m > [22m[2medge cases[2m > [22m[2mshould throw error for undefined URL
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'invalid_type'[39m,
+    expected: [32m'string'[39m,
+    received: [32m'undefined'[39m,
+    path: [],
+    message: [32m'Required'[39m
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mDuckDuckGoSearchAdapter[2m > [22m[2msearch[2m > [22m[2mshould throw error on search failure
+[22m[39m[SearchAdapter] Search failed for query "test": Error: API error
+    at [90m/home/runner/workspace/[39mserver/agent/__tests__/webtool.test.ts:727:43
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:145:11
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:915:26
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1243:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1209:10[90m)[39m
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:37
+    at Traces.$ [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/traces.U4xDYhzZ.js:115:27[90m)[39m
+    at trace [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/test.B8ej_ZHS.js:239:21[90m)[39m
+    at runTest [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:12[90m)[39m
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould throw error for null URL[32m 19[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould throw error for undefined URL[32m 10[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould throw error for malformed URL[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould handle already canonical URL[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould handle URL with encoded characters[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould handle URL with unicode characters[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mcanonicalizeUrl[2m > [22medge cases[2m > [22mshould trim whitespace from URL[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mextractDomain[2m > [22mshould extract domain from full URL[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mextractDomain[2m > [22mshould remove www prefix[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mextractDomain[2m > [22mshould lowercase domain[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mextractDomain[2m > [22mshould handle domain without protocol[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mextractDomain[2m > [22mshould return empty string for invalid URL[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misSameOrigin[2m > [22mshould return true for same origin URLs[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misSameOrigin[2m > [22mshould return false for different domains[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misSameOrigin[2m > [22mshould return false for different protocols[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misSameOrigin[2m > [22mshould return false for different ports[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misSameOrigin[2m > [22mshould return false for invalid URLs[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mconsistency[2m > [22mshould return consistent hash for same content[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mconsistency[2m > [22mshould return 64 character hex string (SHA-256)[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mdifferent content[2m > [22mshould return different hash for different content[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mdifferent content[2m > [22mshould return different hash for slightly different content[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mnormalization[2m > [22mshould be case insensitive[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mnormalization[2m > [22mshould collapse whitespace[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mnormalization[2m > [22mshould trim whitespace[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mnormalization[2m > [22mshould handle newlines and tabs[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22mnormalization[2m > [22mshould remove punctuation[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22medge cases[2m > [22mshould handle empty string[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22medge cases[2m > [22mshould handle null[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22medge cases[2m > [22mshould handle undefined[32m 13[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22medge cases[2m > [22mshould handle very long content[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContent[2m > [22medge cases[2m > [22mshould handle unicode content[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContentRaw[2m > [22mshould not normalize content[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashContentRaw[2m > [22mshould handle empty string[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashUrl[2m > [22mshould hash URL consistently[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mhashUrl[2m > [22mshould return 64 character hex string[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mshortHash[2m > [22mshould return shortened hash with default length[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mshortHash[2m > [22mshould return shortened hash with custom length[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mdomain allowlist scoring[2m > [22mshould give high score to .gov domains[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mdomain allowlist scoring[2m > [22mshould give high score to .edu domains[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mdomain allowlist scoring[2m > [22mshould give high score to wikipedia.org[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mdomain allowlist scoring[2m > [22mshould give high score to nature.com[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mdomain allowlist scoring[2m > [22mshould give high score to nih.gov[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mdomain allowlist scoring[2m > [22mshould give high score to arxiv.org[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mdomain allowlist scoring[2m > [22mshould give moderate score to github.com[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mTLD scoring[2m > [22mshould score .gov TLD high[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mTLD scoring[2m > [22mshould score .edu TLD high[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mTLD scoring[2m > [22mshould score .org TLD moderately[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mTLD scoring[2m > [22mshould score .com TLD as baseline[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mTLD scoring[2m > [22mshould score .io TLD slightly higher than .com[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mTLD scoring[2m > [22mshould score .net TLD lower than .com[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mHTTPS bonus[2m > [22mshould give bonus for HTTPS[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mHTTPS bonus[2m > [22mshould give no bonus for HTTP[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould give high score for content modified today[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould give high score for content modified within a week[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould give good score for content modified within a month[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould give moderate score for content modified within 90 days[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould give lower score for content modified within 180 days[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould give low score for content older than a year[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould default to 50 when no date headers present[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould use Date header if Last-Modified is not present[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mrecency scoring[2m > [22mshould handle Headers object[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mcontent length scoring[2m > [22mshould give 0 for zero length[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mcontent length scoring[2m > [22mshould give 0 for negative length[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mcontent length scoring[2m > [22mshould give low score for very short content[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mcontent length scoring[2m > [22mshould give moderate score for medium content[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mcontent length scoring[2m > [22mshould give high score for optimal content length[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mcontent length scoring[2m > [22mshould give max score for good content length[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mcontent length scoring[2m > [22mshould give slightly reduced score for very long content[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mtotal score calculation[2m > [22mshould sum all component scores[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mtotal score calculation[2m > [22mshould produce high total for authoritative sources[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mqualityScorer[2m > [22mtotal score calculation[2m > [22mshould produce lower total for unknown sources[32m 6[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misHighQuality[2m > [22mshould return true for high quality score[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misHighQuality[2m > [22mshould return false for low quality score[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22misHighQuality[2m > [22mshould use custom threshold[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mgetQualityLabel[2m > [22mshould return excellent for very high scores[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mgetQualityLabel[2m > [22mshould return good for high scores[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mgetQualityLabel[2m > [22mshould return fair for moderate scores[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mgetQualityLabel[2m > [22mshould return poor for low scores[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mDuckDuckGoSearchAdapter[2m > [22msearch[2m > [22mshould return normalized results[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mDuckDuckGoSearchAdapter[2m > [22msearch[2m > [22mshould handle empty results[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mDuckDuckGoSearchAdapter[2m > [22msearch[2m > [22mshould throw error on search failure[32m 5[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mDuckDuckGoSearchAdapter[2m > [22m[2msearch[2m > [22m[2mshould skip invalid results
+[22m[39m[SearchAdapter] Invalid result from search: [
+  {
+    "validation": "url",
+    "code": "invalid_string",
+    "message": "Invalid url",
+    "path": [
+      "url"
+    ]
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mDuckDuckGoSearchAdapter[2m > [22m[2msearchScholar[2m > [22m[2mshould throw error on scholar search failure
+[22m[39m[SearchAdapter] Scholar search failed for query "test": Error: Scholar API error
+    at [90m/home/runner/workspace/[39mserver/agent/__tests__/webtool.test.ts:778:47
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:145:11
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:915:26
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1243:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1209:10[90m)[39m
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:37
+    at Traces.$ [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/traces.U4xDYhzZ.js:115:27[90m)[39m
+    at trace [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/test.B8ej_ZHS.js:239:21[90m)[39m
+    at runTest [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:12[90m)[39m
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mDuckDuckGoSearchAdapter[2m > [22msearch[2m > [22mshould skip invalid results[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mDuckDuckGoSearchAdapter[2m > [22msearch[2m > [22mshould use default maxResults[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mDuckDuckGoSearchAdapter[2m > [22msearchScholar[2m > [22mshould return scholar results with citations[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mDuckDuckGoSearchAdapter[2m > [22msearchScholar[2m > [22mshould throw error on scholar search failure[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22msuccessful fetch[2m > [22mshould fetch content successfully[32m 4[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22msuccessful fetch[2m > [22mshould include timing information[32m 1[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mHTTP 429 Rate Limited Responses[2m > [22m[2mshould handle 429 responses from fetch adapter
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mHTTP 429 Rate Limited Responses[2m > [22m[2mshould fall back to browser on 429 from fetch
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mHTTP 429 Rate Limited Responses[2m > [22m[2mshould respect retry-after header on 429
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mHTTP 403 Forbidden Responses[2m > [22m[2mshould handle 403 responses gracefully
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mHTTP 403 Forbidden Responses[2m > [22m[2mshould try browser adapter on 403 from fetch
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mHTTP 403 Forbidden Responses[2m > [22m[2mshould report error when both fetch and browser return 403
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mTimeout and Slow Response Handling[2m > [22m[2mshould handle slow fetch responses with timeout
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mTimeout and Slow Response Handling[2m > [22m[2mshould fall back to browser on fetch timeout
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mTimeout and Slow Response Handling[2m > [22m[2mshould handle browser timeout gracefully
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mGiant HTML Response Handling (>5MB)[2m > [22m[2mshould handle giant HTML responses without crashing
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mGiant HTML Response Handling (>5MB)[2m > [22m[2mshould truncate or handle oversized content gracefully
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mMalformed HTML Handling[2m > [22m[2mshould handle completely malformed HTML
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mMalformed HTML Handling[2m > [22m[2mshould handle HTML with unclosed tags
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mMalformed HTML Handling[2m > [22m[2mshould handle binary content disguised as HTML
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mMalformed HTML Handling[2m > [22m[2mshould handle deeply nested HTML structures
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mCAPTCHA-like Response Handling[2m > [22m[2mshould detect CAPTCHA-like responses (short, no content)
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mCAPTCHA-like Response Handling[2m > [22m[2mshould try browser on suspected CAPTCHA from fetch
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mCAPTCHA-like Response Handling[2m > [22m[2mshould handle challenge pages
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstdout[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mCircuit Breaker Behavior[2m > [22m[2mshould trigger circuit breaker after repeated failures
+[22m[39m[CircuitBreaker:webtool-test] State transition: CLOSED -> OPEN
+
+[90mstdout[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mCircuit Breaker Behavior[2m > [22m[2mshould recover after circuit breaker reset timeout
+[22m[39m[CircuitBreaker:webtool-recovery-test] State transition: CLOSED -> OPEN
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mtimeout handling[2m > [22mshould timeout after specified duration[32m 103[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mHTTP 429 Rate Limited Responses[2m > [22mshould handle 429 responses from fetch adapter[32m 12[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mHTTP 429 Rate Limited Responses[2m > [22mshould fall back to browser on 429 from fetch[32m 4[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mHTTP 429 Rate Limited Responses[2m > [22mshould respect retry-after header on 429[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mHTTP 403 Forbidden Responses[2m > [22mshould handle 403 responses gracefully[32m 4[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mHTTP 403 Forbidden Responses[2m > [22mshould try browser adapter on 403 from fetch[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mHTTP 403 Forbidden Responses[2m > [22mshould report error when both fetch and browser return 403[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mTimeout and Slow Response Handling[2m > [22mshould handle slow fetch responses with timeout[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mTimeout and Slow Response Handling[2m > [22mshould fall back to browser on fetch timeout[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mTimeout and Slow Response Handling[2m > [22mshould handle browser timeout gracefully[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mGiant HTML Response Handling (>5MB)[2m > [22mshould handle giant HTML responses without crashing[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mGiant HTML Response Handling (>5MB)[2m > [22mshould truncate or handle oversized content gracefully[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mMalformed HTML Handling[2m > [22mshould handle completely malformed HTML[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mMalformed HTML Handling[2m > [22mshould handle HTML with unclosed tags[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mMalformed HTML Handling[2m > [22mshould handle binary content disguised as HTML[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mMalformed HTML Handling[2m > [22mshould handle deeply nested HTML structures[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mCAPTCHA-like Response Handling[2m > [22mshould detect CAPTCHA-like responses (short, no content)[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mCAPTCHA-like Response Handling[2m > [22mshould try browser on suspected CAPTCHA from fetch[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mCAPTCHA-like Response Handling[2m > [22mshould handle challenge pages[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mCircuit Breaker Behavior[2m > [22mshould trigger circuit breaker after repeated failures[32m 3[2mms[22m[39m
+[90mstdout[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mCircuit Breaker Behavior[2m > [22m[2mshould recover after circuit breaker reset timeout
+[22m[39m[CircuitBreaker:webtool-recovery-test] State transition: OPEN -> HALF_OPEN
+
+[90mstdout[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mCircuit Breaker Behavior[2m > [22m[2mshould recover after circuit breaker reset timeout
+[22m[39m[CircuitBreaker:webtool-recovery-test] State transition: HALF_OPEN -> CLOSED
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mFallback Ladder (fetch -> browser -> error)[2m > [22m[2mshould use fetch first, then fall back to browser
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mFallback Ladder (fetch -> browser -> error)[2m > [22m[2mshould return error when both fetch and browser fail
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mFallback Ladder (fetch -> browser -> error)[2m > [22m[2mshould skip browser for successful fetch
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mFallback Ladder (fetch -> browser -> error)[2m > [22m[2mshould handle partial failures in concurrent fetches
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould handle rapid consecutive retrievals
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould handle special characters in URLs
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould handle unicode content
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mEdge Cases and Stress Conditions[2m > [22m[2mshould not leak memory with many failed requests
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mCircuit Breaker Behavior[2m > [22mshould recover after circuit breaker reset timeout[32m 62[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mCircuit Breaker Behavior[2m > [22mshould track circuit breaker stats correctly[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mFallback Ladder (fetch -> browser -> error)[2m > [22mshould use fetch first, then fall back to browser[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mFallback Ladder (fetch -> browser -> error)[2m > [22mshould return error when both fetch and browser fail[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mFallback Ladder (fetch -> browser -> error)[2m > [22mshould skip browser for successful fetch[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mFallback Ladder (fetch -> browser -> error)[2m > [22mshould handle partial failures in concurrent fetches[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mEdge Cases and Stress Conditions[2m > [22mshould handle empty search results[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mEdge Cases and Stress Conditions[2m > [22mshould handle search adapter errors gracefully[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mEdge Cases and Stress Conditions[2m > [22mshould handle rapid consecutive retrievals[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mEdge Cases and Stress Conditions[2m > [22mshould handle special characters in URLs[32m 15[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mEdge Cases and Stress Conditions[2m > [22mshould handle unicode content[32m 3[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mContent Quality and Validation[2m > [22m[2mshould reject extremely short responses as low quality
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+[90mstderr[2m | server/agent/__tests__/webtool-chaos.test.ts[2m > [22m[2mWebtool Chaos Tests[2m > [22m[2mContent Quality and Validation[2m > [22m[2mshould handle responses with only scripts and no content
+[22m[39m[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+[SandboxSecurity] Network access denied (disabled)
+
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mEdge Cases and Stress Conditions[2m > [22mshould not leak memory with many failed requests[32m 72[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mContent Quality and Validation[2m > [22mshould reject extremely short responses as low quality[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool-chaos.test.ts[2m > [22mWebtool Chaos Tests[2m > [22mContent Quality and Validation[2m > [22mshould handle responses with only scripts and no content[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mretry logic[2m > [22mshould retry on retryable errors[33m 3007[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mPlaywrightBrowserAdapter[2m > [22m[2mscreenshot capture[2m > [22m[2mshould return null on screenshot failure
+[22m[39m[BrowserAdapter] Screenshot failed for https://example.com: Error: Session failed
+    at [90m/home/runner/workspace/[39mserver/agent/__tests__/webtool.test.ts:1072:57
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:145:11
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:915:26
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1243:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1209:10[90m)[39m
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:37
+    at Traces.$ [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/traces.U4xDYhzZ.js:115:27[90m)[39m
+    at trace [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/test.B8ej_ZHS.js:239:21[90m)[39m
+    at runTest [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:12[90m)[39m
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mretry logic[2m > [22mshould fail after max retries[33m 3004[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mrobots.txt respect[2m > [22mshould block fetch when robots.txt disallows[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mrobots.txt respect[2m > [22mshould allow fetch when robots.txt allows[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mcheckRobotsTxt[2m > [22mshould cache robots.txt results[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mcheckRobotsTxt[2m > [22mshould return true when robots.txt is not found[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mHttpFetchAdapter[2m > [22mcheckRobotsTxt[2m > [22mshould return true on fetch error[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22msuccessful browse[2m > [22mshould browse and return content[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22msuccessful browse[2m > [22mshould include timing information[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mscreenshot capture[2m > [22mshould capture screenshot when requested[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mscreenshot capture[2m > [22mshould capture screenshot via screenshot method[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mscreenshot capture[2m > [22mshould return null on screenshot failure[32m 12[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mcleanup on error[2m > [22mshould cleanup session on navigation error[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mcleanup on error[2m > [22mshould cleanup session on exception[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mcleanup on error[2m > [22mshould cleanup all sessions via cleanup method[32m 13[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mcancellation[2m > [22mshould handle pre-cancelled token[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mPlaywrightBrowserAdapter[2m > [22mcontent extraction[2m > [22mshould extract text content from HTML[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mfull pipeline integration[2m > [22mshould complete full retrieval pipeline[32m 233[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mURL deduplication by canonical[2m > [22mshould deduplicate URLs with same canonical form[32m 59[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mcontent deduplication by hash[2m > [22mshould deduplicate results with same content hash[32m 59[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mcontent deduplication by hash[2m > [22mshould keep duplicate content when deduplication disabled[32m 88[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mquality score sorting[2m > [22mshould sort results by quality score descending[32m 69[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mblocked domains filtering[2m > [22mshould filter out blocked domains[32m 49[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mblocked domains filtering[2m > [22mshould filter domains blocked by sandbox security[32m 44[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mallowed domains filtering[2m > [22mshould only include allowed domains when specified[32m 42[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mfallback to browser for JS pages[2m > [22mshould fallback to browser when JS is required[32m 93[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mfallback to browser for JS pages[2m > [22mshould use browser when preferBrowser is true[32m 28[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mRetrievalPipeline[2m > [22m[2merror handling[2m > [22m[2mshould handle search errors gracefully
+[22m[39m[RetrievalPipeline] Search failed: Error: Search API down
+    at [90m/home/runner/workspace/[39mserver/agent/__tests__/webtool.test.ts:1475:43
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:145:11
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:915:26
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1243:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1209:10[90m)[39m
+    at [90mfile:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:37
+    at Traces.$ [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/traces.U4xDYhzZ.js:115:27[90m)[39m
+    at trace [90m(file:///home/runner/workspace/[39mnode_modules/[4mvitest[24m/dist/chunks/test.B8ej_ZHS.js:239:21[90m)[39m
+    at runTest [90m(file:///home/runner/workspace/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1653:12[90m)[39m
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22merror handling[2m > [22mshould handle search errors gracefully[32m 4[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22merror handling[2m > [22mshould handle individual URL fetch errors[32m 39[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22merror handling[2m > [22mshould continue processing when some URLs fail[32m 80[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mminQualityScore filtering[2m > [22mshould filter results below minimum quality score[32m 64[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mscholar search[2m > [22mshould include scholar results when includeScholar is true[32m 54[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mtiming metrics[2m > [22mshould include timing breakdown[32m 26[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mRetrievalPipeline[2m > [22mresult statistics[2m > [22mshould include result statistics[32m 113[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mSandbox Security Integration[2m > [22m[2mFetchAdapter security[2m > [22m[2mshould block hosts not in allowlist
+[22m[39m[FetchAdapter] Host blocked by sandbox security: blocked-host.com
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mSandbox Security Integration[2m > [22m[2mFetchAdapter security[2m > [22m[2mshould return false for invalid URLs in isUrlAllowed
+[22m[39m[Validation] FetchAdapter.isUrlAllowed failed: [
+  {
+    code: [32m'too_small'[39m,
+    minimum: [33m1[39m,
+    type: [32m'string'[39m,
+    inclusive: [33mtrue[39m,
+    exact: [33mfalse[39m,
+    message: [32m'String must contain at least 1 character(s)'[39m,
+    path: []
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mSandbox Security Integration[2m > [22m[2mBrowserAdapter security[2m > [22m[2mshould block hosts not in allowlist
+[22m[39m[BrowserAdapter] Host blocked by sandbox security: blocked-host.com
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mZod validation[2m > [22m[2mcanonicalizeUrl input validation[2m > [22m[2mshould throw on empty string input
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'too_small'[39m,
+    minimum: [33m1[39m,
+    type: [32m'string'[39m,
+    inclusive: [33mtrue[39m,
+    exact: [33mfalse[39m,
+    message: [32m'String must contain at least 1 character(s)'[39m,
+    path: []
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mZod validation[2m > [22m[2mcanonicalizeUrl input validation[2m > [22m[2mshould throw on null input
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'invalid_type'[39m,
+    expected: [32m'string'[39m,
+    received: [32m'null'[39m,
+    path: [],
+    message: [32m'Expected string, received null'[39m
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mZod validation[2m > [22m[2mcanonicalizeUrl input validation[2m > [22m[2mshould throw on undefined input
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'invalid_type'[39m,
+    expected: [32m'string'[39m,
+    received: [32m'undefined'[39m,
+    path: [],
+    message: [32m'Required'[39m
+  }
+]
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mSandbox Security Integration[2m > [22mFetchAdapter security[2m > [22mshould block hosts not in allowlist[32m 5[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mSandbox Security Integration[2m > [22mFetchAdapter security[2m > [22mshould allow hosts in allowlist[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mSandbox Security Integration[2m > [22mFetchAdapter security[2m > [22mshould return false for invalid URLs in isUrlAllowed[32m 3[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mSandbox Security Integration[2m > [22mBrowserAdapter security[2m > [22mshould block hosts not in allowlist[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mSandbox Security Integration[2m > [22mBrowserAdapter security[2m > [22mshould allow hosts in allowlist[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mQuality Scorer Enhancements[2m > [22mconfigurable weights[2m > [22mshould apply custom domain weight[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mQuality Scorer Enhancements[2m > [22mconfigurable weights[2m > [22mshould apply custom recency weight[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mQuality Scorer Enhancements[2m > [22mconfigurable weights[2m > [22mshould default to weight of 1 when not specified[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mQuality Scorer Enhancements[2m > [22mauthoritativeness with metadata[2m > [22mshould boost score when author is present[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mQuality Scorer Enhancements[2m > [22mauthoritativeness with metadata[2m > [22mshould boost score when citations are present[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mQuality Scorer Enhancements[2m > [22mauthoritativeness with metadata[2m > [22mshould boost score when references are present[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mQuality Scorer Enhancements[2m > [22mrecency with metadata[2m > [22mshould use publishedDate from metadata over headers[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mZod validation[2m > [22mcanonicalizeUrl input validation[2m > [22mshould throw on empty string input[32m 1[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mZod validation[2m > [22mcanonicalizeUrl input validation[2m > [22mshould throw on null input[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mZod validation[2m > [22mcanonicalizeUrl input validation[2m > [22mshould throw on undefined input[32m 2[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mZod validation[2m > [22mhashContent input validation[2m > [22mshould handle null gracefully[32m 0[2mms[22m[39m
+ [32m✓[39m server/agent/__tests__/webtool.test.ts[2m > [22mZod validation[2m > [22mhashContent input validation[2m > [22mshould handle undefined gracefully[32m 0[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+[2m      Tests [22m [1m[32m283 passed[39m[22m[90m (283)[39m
+[2m   Start at [22m 21:12:53
+[2m   Duration [22m 15.15s[2m (transform 5.73s, setup 0ms, import 14.49s, tests 8.58s, environment 1ms)[22m
+
+
+────────────────────────────────────────────────────────────────────────────────
+PHASE: BENCHMARKS
+Result: PASSED
+Duration: 7.46s
+Details: {
+  "benchmarksPassed": 13,
+  "benchmarksFailed": 0,
+  "exitCode": 0
+}
+
+Output:
+============================================================
+Web Retrieval Benchmark Suite
+============================================================
+
+Running RetrievalPlanner benchmarks...
+Running ConcurrencyPool benchmarks...
+Running ResponseCache benchmarks...
+Running RelevanceFilter benchmarks...
+Running RetrievalMetricsCollector benchmarks...
+
+============================================================
+RESULTS
+============================================================
+
+✓ PASS RetrievalPlanner.plan() - Simple query (threshold: 10ms)
+  Iterations: 100
+  Min: 0.011ms
+  Max: 2.354ms
+  Avg: 0.049ms
+  P50: 0.023ms
+  P95: 0.049ms
+  P99: 0.117ms
+  Ops/sec: 20258.9
+
+
+✓ PASS RetrievalPlanner.plan() - Complex query (threshold: 10ms)
+  Iterations: 100
+  Min: 0.025ms
+  Max: 11.320ms
+  Avg: 0.150ms
+  P50: 0.028ms
+  P95: 0.058ms
+  P99: 0.407ms
+  Ops/sec: 6670.9
+
+
+✓ PASS ConcurrencyPool.executeAll() - 1 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 102.821ms
+  Max: 124.253ms
+  Avg: 110.531ms
+  P50: 109.202ms
+  P95: 124.253ms
+  P99: 124.253ms
+  Ops/sec: 9.0
+
+
+✓ PASS ConcurrencyPool.executeAll() - 2 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 51.216ms
+  Max: 59.588ms
+  Avg: 54.840ms
+  P50: 53.362ms
+  P95: 59.588ms
+  P99: 59.588ms
+  Ops/sec: 18.2
+
+
+✓ PASS ConcurrencyPool.executeAll() - 5 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 20.393ms
+  Max: 54.526ms
+  Avg: 26.906ms
+  P50: 21.932ms
+  P95: 54.526ms
+  P99: 54.526ms
+  Ops/sec: 37.2
+
+
+✓ PASS ConcurrencyPool.executeAll() - 10 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 10.556ms
+  Max: 14.587ms
+  Avg: 11.813ms
+  P50: 10.791ms
+  P95: 14.587ms
+  P99: 14.587ms
+  Ops/sec: 84.7
+
+
+✓ PASS ResponseCache.get() - Hit (threshold: 1ms)
+  Iterations: 100
+  Min: 0.002ms
+  Max: 0.010ms
+  Avg: 0.003ms
+  P50: 0.002ms
+  P95: 0.004ms
+  P99: 0.005ms
+  Ops/sec: 386549.6
+
+
+✓ PASS ResponseCache.get() - Miss (threshold: 1ms)
+  Iterations: 100
+  Min: 0.002ms
+  Max: 0.008ms
+  Avg: 0.002ms
+  P50: 0.002ms
+  P95: 0.002ms
+  P99: 0.003ms
+  Ops/sec: 474338.3
+
+
+✓ PASS ResponseCache.set() - New entry (threshold: 2ms)
+  Iterations: 100
+  Min: 0.003ms
+  Max: 0.007ms
+  Avg: 0.003ms
+  P50: 0.003ms
+  P95: 0.004ms
+  P99: 0.004ms
+  Ops/sec: 331865.4
+
+
+✓ PASS RelevanceFilter.filter() - Short content (threshold: 50ms)
+  Iterations: 100
+  Min: 0.028ms
+  Max: 2.619ms
+  Avg: 0.097ms
+  P50: 0.045ms
+  P95: 0.116ms
+  P99: 1.000ms
+  Ops/sec: 10356.2
+
+
+✓ PASS RelevanceFilter.filter() - Long content (threshold: 100ms)
+  Iterations: 100
+  Min: 0.255ms
+  Max: 2.993ms
+  Avg: 0.719ms
+  P50: 0.480ms
+  P95: 1.992ms
+  P99: 2.618ms
+  Ops/sec: 1390.0
+
+
+✓ PASS RetrievalMetricsCollector.getSLAReport() (threshold: 10ms)
+  Iterations: 100
+  Min: 2.524ms
+  Max: 38.432ms
+  Avg: 5.084ms
+  P50: 3.962ms
+  P95: 9.167ms
+  P99: 19.440ms
+  Ops/sec: 196.7
+
+
+✓ PASS RetrievalMetricsCollector.getMethodBreakdown() (threshold: 20ms)
+  Iterations: 100
+  Min: 0.334ms
+  Max: 5.623ms
+  Avg: 0.578ms
+  P50: 0.373ms
+  P95: 1.981ms
+  P99: 3.474ms
+  Ops/sec: 1731.5
+
+============================================================
+SUMMARY
+============================================================
+
+Total benchmarks: 13
+Passed: 13
+Failed: 0
+
+Overall: ✓ ALL PASSED
+
+────────────────────────────────────────────────────────────────────────────────
+PHASE: GOLDEN_FIXTURES
+Result: FAILED
+Duration: 0.01s
+Details: {
+  "totalFixtures": 10,
+  "passedCount": 5,
+  "failedCount": 5,
+  "passRate": "50.00%",
+  "failures": [
+    {
+      "query": "best practices for React hooks",
+      "expected": 0.05,
+      "actual": 0.5139285714285714,
+      "difference": 0.4639285714285714
+    },
+    {
+      "query": "how to make chocolate cake",
+      "expected": 0.82,
+      "actual": 0.9999999999999999,
+      "difference": 0.17999999999999994
+    },
+    {
+      "query": "COVID-19 vaccine effectiveness",
+      "expected": 0.88,
+      "actual": 0.9999999999999999,
+      "difference": 0.11999999999999988
+    },
+    {
+      "query": "history of the Roman Empire",
+      "expected": 0.8,
+      "actual": 0.9999999999999999,
+      "difference": 0.19999999999999984
+    },
+    {
+      "query": "Mediterranean diet benefits",
+      "expected": 0.9,
+      "actual": 0.9999999999999999,
+      "difference": 0.09999999999999987
+    }
+  ]
+}
+
+────────────────────────────────────────────────────────────────────────────────
+PHASE: SOAK_TEST
+Result: PASSED
+Duration: 0.00s
+Details: {
+  "skipped": true,
+  "reason": "--quick mode"
+}
+
+Output:
+(skipped)
+================================================================================
+SLO COMPLIANCE
+================================================================================
+{
+  "passed": false,
+  "details": {
+    "thresholds": {
+      "unitTestPassRate": 100,
+      "benchmarkPassRate": 100,
+      "goldenFixturesPassRate": 95,
+      "soakSuccessRate": 95,
+      "fetchP95Ms": 3000,
+      "browserP95Ms": 8000
+    },
+    "checks": [
+      {
+        "name": "unit_test_pass_rate",
+        "passed": true,
+        "value": "100%",
+        "threshold": "100% pass rate"
+      },
+      {
+        "name": "benchmark_pass_rate",
+        "passed": true,
+        "value": "100%",
+        "threshold": "100% pass rate"
+      },
+      {
+        "name": "golden_fixtures_pass_rate",
+        "passed": false,
+        "value": "50.00%",
+        "threshold": "≥95%"
+      }
+    ],
+    "allPassed": false
+  }
+}

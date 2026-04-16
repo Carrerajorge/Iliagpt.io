@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iliagpt-config
+  namespace: iliagpt
+  labels:
+    app: iliagpt
+    app.kubernetes.io/name: iliagpt
+    app.kubernetes.io/component: config
+data:
+  # ── Application ─────────────────────────────────────────────────────────────
+  NODE_ENV: "production"
+  PORT: "5000"
+  HOST: "0.0.0.0"
+  LOG_LEVEL: "info"
+  TRUST_PROXY: "1"
+  APP_URL: "https://iliagpt.io"
+
+  # ── Node.js runtime tuning ───────────────────────────────────────────────────
+  NODE_OPTIONS: "--max-old-space-size=512 --enable-source-maps"
+  UV_THREADPOOL_SIZE: "16"
+  NO_UPDATE_NOTIFIER: "1"
+
+  # ── Database ─────────────────────────────────────────────────────────────────
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "iliagpt"
+  DB_USER: "iliagpt"
+  DB_SSL: "false"
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "20"
+  DB_POOL_ACQUIRE_TIMEOUT_MS: "30000"
+  DB_POOL_IDLE_TIMEOUT_MS: "600000"
+  DB_STATEMENT_TIMEOUT_MS: "30000"
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  REDIS_KEY_PREFIX: "iliagpt:"
+  REDIS_CONNECT_TIMEOUT_MS: "5000"
+  REDIS_COMMAND_TIMEOUT_MS: "3000"
+
+  # ── Session ───────────────────────────────────────────────────────────────────
+  SESSION_STORE: "redis"
+  SESSION_TTL_SECONDS: "604800"      # 7 days
+  SESSION_COOKIE_SECURE: "true"
+  SESSION_COOKIE_SAMESITE: "lax"
+
+  # ── Rate limiting ─────────────────────────────────────────────────────────────
+  RATE_LIMIT_WINDOW_MS: "60000"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  RATE_LIMIT_SKIP_SUCCESSFUL_REQUESTS: "false"
+
+  # ── LLM Smart Router ─────────────────────────────────────────────────────────
+  SMART_ROUTER_ENABLED: "true"
+  CIRCUIT_BREAKER_FAILURE_THRESHOLD: "3"
+  CIRCUIT_BREAKER_RECOVERY_MS: "300000"
+  LLM_REQUEST_TIMEOUT_MS: "120000"
+  LLM_CACHE_TTL_SECONDS: "3600"
+
+  # ── Budget enforcement ───────────────────────────────────────────────────────
+  BUDGET_FREE_DAILY_USD: "0.50"
+  BUDGET_PRO_DAILY_USD: "5.00"
+  BUDGET_ENTERPRISE_DAILY_USD: "50.00"
+
+  # ── Streaming ─────────────────────────────────────────────────────────────────
+  SSE_IDLE_TIMEOUT_MS: "60000"
+  SSE_HEARTBEAT_MS: "15000"
+  WS_MAX_PAYLOAD_BYTES: "524288"      # 512 KB
+
+  # ── File upload ───────────────────────────────────────────────────────────────
+  UPLOAD_MAX_SIZE_MB: "50"
+  UPLOAD_ALLOWED_TYPES: "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,image/png,image/jpeg"
+  UPLOAD_STORAGE: "local"
+  UPLOAD_DIR: "/app/uploads"
+
+  # ── Memory system ────────────────────────────────────────────────────────────
+  MEMORY_EXTRACTION_ENABLED: "true"
+  MEMORY_MAX_FACTS_PER_USER: "500"
+  MEMORY_INJECTION_MAX_FACTS: "10"
+
+  # ── Browser agent ─────────────────────────────────────────────────────────────
+  BROWSER_AGENT_TIMEOUT_MS: "30000"
+  BROWSER_AGENT_MAX_PAGES: "5"
+  BROWSER_HEADLESS: "true"
+
+  # ── Code execution sandbox ───────────────────────────────────────────────────
+  CODE_EXEC_TIMEOUT_MS: "30000"
+  CODE_EXEC_MAX_OUTPUT_BYTES: "1048576"   # 1 MB
+
+  # ── Monitoring ───────────────────────────────────────────────────────────────
+  METRICS_ENABLED: "true"
+  METRICS_PORT: "9090"
+  HEALTH_CHECK_PATH: "/api/health"
+
+  # ── CORS ─────────────────────────────────────────────────────────────────────
+  CORS_ORIGINS: "https://iliagpt.io,https://www.iliagpt.io"
+  CORS_CREDENTIALS: "true"

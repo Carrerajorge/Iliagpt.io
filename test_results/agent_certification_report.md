@@ -1,0 +1,346 @@
+# Agent Certification Report
+
+**Generated**: 2026-01-02T19:38:12.587Z
+**Status**: ❌ FAILED
+
+## Summary
+
+- **Test Suites**: 2/4 passed
+- **Total Tests**: 10 passed, 2 failed
+- **Total Duration**: 25.96s
+
+## Results
+
+| Suite | Status | Duration | Tests Passed | Tests Failed |
+|-------|--------|----------|--------------|-------------|
+| All Agent Tests | ❌ | 11.54s | 7 | 1 |
+| Benchmark Tests | ✅ | 5.92s | 1 | 0 |
+| Chaos Tests | ❌ | 6.24s | 1 | 1 |
+| Cache Isolation Tests | ✅ | 2.26s | 1 | 0 |
+
+## Detailed Output
+
+### All Agent Tests
+
+**Command**: `npx vitest run server/agent/__tests__ 2>&1`
+
+**Status**: FAILED
+
+<details>
+<summary>Output (click to expand)</summary>
+
+```
+ed tool
+[22m[39m[ToolRegistry] Registered tool: mock_tool
+
+[90mstdout[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mToolRegistry[2m > [22m[2mregistration and retrieval[2m > [22m[2mshould list all registered tools
+[22m[39m[ToolRegistry] Registered tool: mock_tool
+[ToolRegistry] Registered tool: failing_tool
+
+[90mstdout[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mToolRegistry[2m > [22m[2mregistration and retrieval[2m > [22m[2mshould overwrite existing tool with same name
+[22m[39m[ToolRegistry] Registered tool: mock_tool
+[ToolRegistry] Registered tool: mock_tool
+
+[90mstderr[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mToolRegistry[2m > [22m[2mregistration and retrieval[2m > [22m[2mshould overwrite existing tool with same name
+[22m[39m[ToolRegistry] Overwriting existing tool: mock_tool
+
+[90mstdout[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mToolRegistry[2m > [22m[2mexecute[2m > [22m[2mshould return standardized output with all fields
+[22m[39m[ToolRegistry] Registered tool: mock_tool
+
+[90mstdout[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mToolRegistry[2m > [22m[2mexecute[2m > [22m[2mshould return error for invalid input
+[22m[39m[ToolRegistry] Registered tool: mock_tool
+
+[90mstdout[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mPolicyEngine[2m > [22m[2mrate limiting[2m > [22m[2mshould track rate limit calls with incrementRateLimit
+[22m[39m[PolicyEngine] Registered policy for tool: rate_limited_tool
+
+[90mstdout[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mPolicyEngine[2m > [22m[2mrate limiting[2m > [22m[2mshould clear rate limits
+[22m[39m[PolicyEngine] Registered policy for tool: rate_limited_tool
+
+[90mstdout[2m | server/agent/__tests__/agent.test.ts[2m > [22m[2mPolicyEngine[2m > [22m[2mregisterPolicy[2m > [22m[2mshould register new policy
+[22m[39m[PolicyEngine] Registered policy for tool: custom_tool
+
+ [32m✓[39m server/agent/__tests__/agent.test.ts [2m([22m[2m81 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mSandbox Security Integration[2m > [22m[2mFetchAdapter security[2m > [22m[2mshould block hosts not in allowlist
+[22m[39m[FetchAdapter] Host blocked by sandbox security: blocked-host.com
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mSandbox Security Integration[2m > [22m[2mFetchAdapter security[2m > [22m[2mshould return false for invalid URLs in isUrlAllowed
+[22m[39m[Validation] FetchAdapter.isUrlAllowed failed: [
+  {
+    code: [32m'too_small'[39m,
+    minimum: [33m1[39m,
+    type: [32m'string'[39m,
+    inclusive: [33mtrue[39m,
+    exact: [33mfalse[39m,
+    message: [32m'String must contain at least 1 character(s)'[39m,
+    path: []
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mSandbox Security Integration[2m > [22m[2mBrowserAdapter security[2m > [22m[2mshould block hosts not in allowlist
+[22m[39m[BrowserAdapter] Host blocked by sandbox security: blocked-host.com
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mZod validation[2m > [22m[2mcanonicalizeUrl input validation[2m > [22m[2mshould throw on empty string input
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'too_small'[39m,
+    minimum: [33m1[39m,
+    type: [32m'string'[39m,
+    inclusive: [33mtrue[39m,
+    exact: [33mfalse[39m,
+    message: [32m'String must contain at least 1 character(s)'[39m,
+    path: []
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mZod validation[2m > [22m[2mcanonicalizeUrl input validation[2m > [22m[2mshould throw on null input
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'invalid_type'[39m,
+    expected: [32m'string'[39m,
+    received: [32m'null'[39m,
+    path: [],
+    message: [32m'Expected string, received null'[39m
+  }
+]
+
+[90mstderr[2m | server/agent/__tests__/webtool.test.ts[2m > [22m[2mZod validation[2m > [22m[2mcanonicalizeUrl input validation[2m > [22m[2mshould throw on undefined input
+[22m[39m[Validation] canonicalizeUrl failed: [
+  {
+    code: [32m'invalid_type'[39m,
+    expected: [32m'string'[39m,
+    received: [32m'undefined'[39m,
+    path: [],
+    message: [32m'Required'[39m
+  }
+]
+
+ [32m✓[39m server/agent/__tests__/webtool.test.ts [2m([22m[2m170 tests[22m[2m)[22m[33m 6892[2mms[22m[39m
+       [33m[2m✓[22m[39m should retry on retryable errors [33m 3005[2mms[22m[39m
+       [33m[2m✓[22m[39m should fail after max retries [33m 3002[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m7 passed[39m[22m[90m (7)[39m
+[2m      Tests [22m [1m[32m408 passed[39m[22m[90m (408)[39m
+[2m   Start at [22m 19:37:48
+[2m   Duration [22m 10.00s[2m (transform 2.75s, setup 0ms, import 17.90s, tests 8.33s, environment 2ms)[22m
+
+
+```
+
+</details>
+
+### Benchmark Tests
+
+**Command**: `npx vitest run server/agent/__tests__/benchmarks.test.ts 2>&1`
+
+**Status**: PASSED
+
+<details>
+<summary>Output (click to expand)</summary>
+
+```
+rifying
+[StateMachine] Run run-983: verifying -> completed
+[StateMachine] Run run-984: queued -> planning
+[StateMachine] Run run-984: planning -> running
+[StateMachine] Run run-984: running -> verifying
+[StateMachine] Run run-984: verifying -> completed
+[StateMachine] Run run-985: queued -> planning
+[StateMachine] Run run-985: planning -> running
+[StateMachine] Run run-985: running -> verifying
+[StateMachine] Run run-985: verifying -> completed
+[StateMachine] Run run-986: queued -> planning
+[StateMachine] Run run-986: planning -> running
+[StateMachine] Run run-986: running -> verifying
+[StateMachine] Run run-986: verifying -> completed
+[StateMachine] Run run-987: queued -> planning
+[StateMachine] Run run-987: planning -> running
+[StateMachine] Run run-987: running -> verifying
+[StateMachine] Run run-987: verifying -> completed
+[StateMachine] Run run-988: queued -> planning
+[StateMachine] Run run-988: planning -> running
+[StateMachine] Run run-988: running -> verifying
+[StateMachine] Run run-988: verifying -> completed
+[StateMachine] Run run-989: queued -> planning
+[StateMachine] Run run-989: planning -> running
+[StateMachine] Run run-989: running -> verifying
+[StateMachine] Run run-989: verifying -> completed
+[StateMachine] Run run-990: queued -> planning
+[StateMachine] Run run-990: planning -> running
+[StateMachine] Run run-990: running -> verifying
+[StateMachine] Run run-990: verifying -> completed
+[StateMachine] Run run-991: queued -> planning
+[StateMachine] Run run-991: planning -> running
+[StateMachine] Run run-991: running -> verifying
+[StateMachine] Run run-991: verifying -> completed
+[StateMachine] Run run-992: queued -> planning
+[StateMachine] Run run-992: planning -> running
+[StateMachine] Run run-992: running -> verifying
+[StateMachine] Run run-992: verifying -> completed
+[StateMachine] Run run-993: queued -> planning
+[StateMachine] Run run-993: planning -> running
+[StateMachine] Run run-993: running -> verifying
+[StateMachine] Run run-993: verifying -> completed
+[StateMachine] Run run-994: queued -> planning
+[StateMachine] Run run-994: planning -> running
+[StateMachine] Run run-994: running -> verifying
+[StateMachine] Run run-994: verifying -> completed
+[StateMachine] Run run-995: queued -> planning
+[StateMachine] Run run-995: planning -> running
+[StateMachine] Run run-995: running -> verifying
+[StateMachine] Run run-995: verifying -> completed
+[StateMachine] Run run-996: queued -> planning
+[StateMachine] Run run-996: planning -> running
+[StateMachine] Run run-996: running -> verifying
+[StateMachine] Run run-996: verifying -> completed
+[StateMachine] Run run-997: queued -> planning
+[StateMachine] Run run-997: planning -> running
+[StateMachine] Run run-997: running -> verifying
+[StateMachine] Run run-997: verifying -> completed
+[StateMachine] Run run-998: queued -> planning
+[StateMachine] Run run-998: planning -> running
+[StateMachine] Run run-998: running -> verifying
+[StateMachine] Run run-998: verifying -> completed
+[StateMachine] Run run-999: queued -> planning
+[StateMachine] Run run-999: planning -> running
+[StateMachine] Run run-999: running -> verifying
+[StateMachine] Run run-999: verifying -> completed
+[Benchmark] 1000 state machine cycles: 53.73ms
+
+[90mstdout[2m | server/agent/__tests__/benchmarks.test.ts[2m > [22m[2mPerformance Benchmarks - Agent Infrastructure[2m > [22m[2mMetrics Collector Performance[2m > [22m[2mshould record 10000 metrics in < 200ms
+[22m[39m[Benchmark] 10000 metric recordings: 5.74ms
+
+[90mstdout[2m | server/agent/__tests__/benchmarks.test.ts[2m > [22m[2mPerformance Benchmarks - Agent Infrastructure[2m > [22m[2mMetrics Collector Performance[2m > [22m[2mshould retrieve metrics summary in < 50ms
+[22m[39m[Benchmark] Metrics retrieval: 3.83ms
+
+[90mstdout[2m | server/agent/__tests__/benchmarks.test.ts[2m > [22m[2mPerformance Benchmarks - Agent Infrastructure[2m > [22m[2mTool Registry Performance[2m > [22m[2mshould handle 100 concurrent mock tool calls in < 500ms
+[22m[39m[ToolRegistry] Registered tool: perf_mock
+
+[90mstdout[2m | server/agent/__tests__/benchmarks.test.ts[2m > [22m[2mPerformance Benchmarks - Agent Infrastructure[2m > [22m[2mTool Registry Performance[2m > [22m[2mshould handle 100 concurrent mock tool calls in < 500ms
+[22m[39m[Benchmark] 100 concurrent tool calls: 1.47ms
+
+[90mstdout[2m | server/agent/__tests__/benchmarks.test.ts[2m > [22m[2mPerformance Benchmarks - Agent Infrastructure[2m > [22m[2mMemory Usage[2m > [22m[2mshould not exceed 50MB for 10000 events
+[22m[39m[Benchmark] Memory used for 10000 events: 2.26MB
+
+ [32m✓[39m server/agent/__tests__/benchmarks.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 85[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m   Start at [22m 19:37:59
+[2m   Duration [22m 4.33s[2m (transform 953ms, setup 0ms, import 3.81s, tests 85ms, environment 0ms)[22m
+
+
+```
+
+</details>
+
+### Chaos Tests
+
+**Command**: `npx vitest run server/agent/__tests__/chaos.test.ts 2>&1`
+
+**Status**: FAILED
+
+<details>
+<summary>Output (click to expand)</summary>
+
+```
+-49: queued -> planning
+[StateMachine] Run concurrent-0: planning -> running
+[StateMachine] Run concurrent-1: planning -> running
+[StateMachine] Run concurrent-2: planning -> running
+[StateMachine] Run concurrent-3: planning -> running
+[StateMachine] Run concurrent-4: planning -> running
+[StateMachine] Run concurrent-5: planning -> running
+[StateMachine] Run concurrent-6: planning -> running
+[StateMachine] Run concurrent-7: planning -> running
+[StateMachine] Run concurrent-8: planning -> running
+[StateMachine] Run concurrent-9: planning -> running
+[StateMachine] Run concurrent-10: planning -> running
+[StateMachine] Run concurrent-11: planning -> running
+[StateMachine] Run concurrent-12: planning -> running
+[StateMachine] Run concurrent-13: planning -> running
+[StateMachine] Run concurrent-14: planning -> running
+[StateMachine] Run concurrent-15: planning -> running
+[StateMachine] Run concurrent-16: planning -> running
+[StateMachine] Run concurrent-17: planning -> running
+[StateMachine] Run concurrent-18: planning -> running
+[StateMachine] Run concurrent-19: planning -> running
+[StateMachine] Run concurrent-20: planning -> running
+[StateMachine] Run concurrent-21: planning -> running
+[StateMachine] Run concurrent-22: planning -> running
+[StateMachine] Run concurrent-23: planning -> running
+[StateMachine] Run concurrent-24: planning -> running
+[StateMachine] Run concurrent-25: planning -> running
+[StateMachine] Run concurrent-26: planning -> running
+[StateMachine] Run concurrent-27: planning -> running
+[StateMachine] Run concurrent-28: planning -> running
+[StateMachine] Run concurrent-29: planning -> running
+[StateMachine] Run concurrent-30: planning -> running
+[StateMachine] Run concurrent-31: planning -> running
+[StateMachine] Run concurrent-32: planning -> running
+[StateMachine] Run concurrent-33: planning -> running
+[StateMachine] Run concurrent-34: planning -> running
+[StateMachine] Run concurrent-35: planning -> running
+[StateMachine] Run concurrent-36: planning -> running
+[StateMachine] Run concurrent-37: planning -> running
+[StateMachine] Run concurrent-38: planning -> running
+[StateMachine] Run concurrent-39: planning -> running
+[StateMachine] Run concurrent-40: planning -> running
+[StateMachine] Run concurrent-41: planning -> running
+[StateMachine] Run concurrent-42: planning -> running
+[StateMachine] Run concurrent-43: planning -> running
+[StateMachine] Run concurrent-44: planning -> running
+[StateMachine] Run concurrent-45: planning -> running
+[StateMachine] Run concurrent-46: planning -> running
+[StateMachine] Run concurrent-47: planning -> running
+[StateMachine] Run concurrent-48: planning -> running
+[StateMachine] Run concurrent-49: planning -> running
+
+[90mstdout[2m | server/agent/__tests__/chaos.test.ts[2m > [22m[2mChaos Tests - Agent Infrastructure[2m > [22m[2mEdge Cases and Boundary Conditions[2m > [22m[2mshould handle very long tool names
+[22m[39m[ToolRegistry] Registered tool: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+[90mstdout[2m | server/agent/__tests__/chaos.test.ts[2m > [22m[2mChaos Tests - Agent Infrastructure[2m > [22m[2mEdge Cases and Boundary Conditions[2m > [22m[2mshould handle special characters in tool names
+[22m[39m[ToolRegistry] Registered tool: tool-with_special.chars:123
+
+[90mstdout[2m | server/agent/__tests__/chaos.test.ts[2m > [22m[2mChaos Tests - Agent Infrastructure[2m > [22m[2mEdge Cases and Boundary Conditions[2m > [22m[2mshould handle step machine max retries boundary
+[22m[39m[StateMachine] Step boundary-step: pending -> running (retries: 0)
+[StateMachine] Step boundary-step: running -> failed (retries: 0)
+
+ [32m✓[39m server/agent/__tests__/chaos.test.ts [2m([22m[2m39 tests[22m[2m)[22m[33m 443[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m39 passed[39m[22m[90m (39)[39m
+[2m   Start at [22m 19:38:05
+[2m   Duration [22m 4.67s[2m (transform 907ms, setup 0ms, import 3.84s, tests 443ms, environment 0ms)[22m
+
+
+```
+
+</details>
+
+### Cache Isolation Tests
+
+**Command**: `npx vitest run server/agent/__tests__/webtool-cache-isolation.test.ts 2>&1`
+
+**Status**: PASSED
+
+<details>
+<summary>Output (click to expand)</summary>
+
+```
+
+[1m[46m RUN [49m[22m [36mv4.0.16 [39m[90m/home/runner/workspace[39m
+
+ [32m✓[39m server/agent/__tests__/webtool-cache-isolation.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 121[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m26 passed[39m[22m[90m (26)[39m
+[2m   Start at [22m 19:38:11
+[2m   Duration [22m 691ms[2m (transform 110ms, setup 0ms, import 162ms, tests 121ms, environment 0ms)[22m
+
+
+```
+
+</details>
+
+---
+*Report generated by agent:certify*

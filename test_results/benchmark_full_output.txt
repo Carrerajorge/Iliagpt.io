@@ -1,0 +1,165 @@
+============================================================
+Web Retrieval Benchmark Suite
+============================================================
+
+Running RetrievalPlanner benchmarks...
+Running ConcurrencyPool benchmarks...
+Running ResponseCache benchmarks...
+Running RelevanceFilter benchmarks...
+Running RetrievalMetricsCollector benchmarks...
+
+============================================================
+RESULTS
+============================================================
+
+✓ PASS RetrievalPlanner.plan() - Simple query (threshold: 10ms)
+  Iterations: 100
+  Min: 0.011ms
+  Max: 1.380ms
+  Avg: 0.035ms
+  P50: 0.017ms
+  P95: 0.074ms
+  P99: 0.120ms
+  Ops/sec: 28948.5
+
+
+✓ PASS RetrievalPlanner.plan() - Complex query (threshold: 10ms)
+  Iterations: 100
+  Min: 0.016ms
+  Max: 3.582ms
+  Avg: 0.058ms
+  P50: 0.018ms
+  P95: 0.036ms
+  P99: 0.091ms
+  Ops/sec: 17236.4
+
+
+✓ PASS ConcurrencyPool.executeAll() - 1 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 102.861ms
+  Max: 107.135ms
+  Avg: 104.685ms
+  P50: 104.437ms
+  P95: 107.135ms
+  P99: 107.135ms
+  Ops/sec: 9.6
+
+
+✓ PASS ConcurrencyPool.executeAll() - 2 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 51.519ms
+  Max: 54.795ms
+  Avg: 52.548ms
+  P50: 52.231ms
+  P95: 54.795ms
+  P99: 54.795ms
+  Ops/sec: 19.0
+
+
+✓ PASS ConcurrencyPool.executeAll() - 5 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 20.039ms
+  Max: 21.409ms
+  Avg: 21.023ms
+  P50: 21.146ms
+  P95: 21.409ms
+  P99: 21.409ms
+  Ops/sec: 47.6
+
+
+✓ PASS ConcurrencyPool.executeAll() - 10 concurrent (threshold: 200ms)
+  Iterations: 10
+  Min: 9.641ms
+  Max: 12.067ms
+  Avg: 10.712ms
+  P50: 10.661ms
+  P95: 12.067ms
+  P99: 12.067ms
+  Ops/sec: 93.4
+
+
+✓ PASS ResponseCache.get() - Hit (threshold: 1ms)
+  Iterations: 100
+  Min: 0.003ms
+  Max: 0.065ms
+  Avg: 0.005ms
+  P50: 0.004ms
+  P95: 0.006ms
+  P99: 0.014ms
+  Ops/sec: 201373.8
+
+
+✓ PASS ResponseCache.get() - Miss (threshold: 1ms)
+  Iterations: 100
+  Min: 0.003ms
+  Max: 0.009ms
+  Avg: 0.004ms
+  P50: 0.004ms
+  P95: 0.006ms
+  P99: 0.007ms
+  Ops/sec: 256636.0
+
+
+✓ PASS ResponseCache.set() - New entry (threshold: 2ms)
+  Iterations: 100
+  Min: 0.003ms
+  Max: 0.013ms
+  Avg: 0.005ms
+  P50: 0.005ms
+  P95: 0.008ms
+  P99: 0.012ms
+  Ops/sec: 183942.6
+
+
+✓ PASS RelevanceFilter.filter() - Short content (threshold: 50ms)
+  Iterations: 100
+  Min: 0.026ms
+  Max: 1.621ms
+  Avg: 0.053ms
+  P50: 0.031ms
+  P95: 0.061ms
+  P99: 0.187ms
+  Ops/sec: 18904.2
+
+
+✓ PASS RelevanceFilter.filter() - Long content (threshold: 100ms)
+  Iterations: 100
+  Min: 0.238ms
+  Max: 1.300ms
+  Avg: 0.358ms
+  P50: 0.300ms
+  P95: 0.707ms
+  P99: 1.085ms
+  Ops/sec: 2793.3
+
+
+✓ PASS RetrievalMetricsCollector.getSLAReport() (threshold: 10ms)
+  Iterations: 100
+  Min: 2.109ms
+  Max: 4.265ms
+  Avg: 2.461ms
+  P50: 2.318ms
+  P95: 3.185ms
+  P99: 3.964ms
+  Ops/sec: 406.4
+
+
+✓ PASS RetrievalMetricsCollector.getMethodBreakdown() (threshold: 20ms)
+  Iterations: 100
+  Min: 0.215ms
+  Max: 1.046ms
+  Avg: 0.316ms
+  P50: 0.289ms
+  P95: 0.449ms
+  P99: 0.833ms
+  Ops/sec: 3165.4
+
+============================================================
+SUMMARY
+============================================================
+
+Total benchmarks: 13
+Passed: 13
+Failed: 0
+
+Overall: ✓ ALL PASSED
