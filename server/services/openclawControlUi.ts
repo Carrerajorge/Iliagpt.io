@@ -90,6 +90,34 @@ try{
       if(el){el.textContent=".login-gate{opacity:1;pointer-events:auto}";}
     },15000);
   }catch{}
+
+  // Fallback auto-connect: if the bundle's native auto-connect doesn't fire,
+  // click the Connect button in the login gate after a delay. Guarded to
+  // fire at most once and only if still on the login gate.
+  var autoClickAttempts=0;
+  var autoClickMax=10;
+  function tryAutoClick(){
+    if(autoClickAttempts>=autoClickMax)return;
+    autoClickAttempts++;
+    var app=document.querySelector("openclaw-app");
+    if(!app)return setTimeout(tryAutoClick,500);
+    var root=app.shadowRoot||app;
+    var btn=root.querySelector("button[data-action=\\"connect\\"],button.connect-btn,.login-gate button[type=\\"submit\\"],.login-gate button");
+    if(!btn){
+      // Try broader search including nested shadow roots
+      var allBtns=root.querySelectorAll("button");
+      for(var b=0;b<allBtns.length;b++){
+        var txt=(allBtns[b].textContent||"").toLowerCase().trim();
+        if(txt==="connect"||txt==="conectar"){btn=allBtns[b];break;}
+      }
+    }
+    if(btn){
+      try{btn.click();console.log("[OC-Pre] Auto-clicked connect button");}catch(_e){}
+    }else{
+      setTimeout(tryAutoClick,500);
+    }
+  }
+  setTimeout(tryAutoClick,1500);
 }catch(e){console.error("[OC-Pre]",e)}
 })()`;
 }
