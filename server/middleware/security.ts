@@ -10,12 +10,25 @@ export function setupSecurity(app: Express): void {
 }
 
 // --- 1. Security Headers ---
-export const securityHeaders = (_req: Request, res: Response, next: NextFunction) => {
+// The OpenClaw Control UI is intentionally embedded as a same-origin iframe from
+// the IliaGPT app (client/src/pages/openclaw.tsx). `X-Frame-Options: DENY`
+// blocks that embedding and results in a blank iframe in browsers that honor it,
+// even though the CSP `frame-ancestors 'self'` would permit it. For these
+// routes we downgrade to `SAMEORIGIN` to match the CSP intent.
+const SAMEORIGIN_FRAME_PATHS = ["/openclaw-boot", "/openclaw-ui"] as const;
+function requiresSameOriginFraming(path: string): boolean {
+  return SAMEORIGIN_FRAME_PATHS.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p + "?") || path.startsWith(p + "#"));
+}
+
+export const securityHeaders = (req: Request, res: Response, next: NextFunction) => {
   if (process.env.NODE_ENV === "production") {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader(
+    "X-Frame-Options",
+    requiresSameOriginFraming(req.path) ? "SAMEORIGIN" : "DENY",
+  );
   res.setHeader("X-XSS-Protection", "0");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
