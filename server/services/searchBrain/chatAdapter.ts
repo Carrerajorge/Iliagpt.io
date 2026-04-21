@@ -206,6 +206,19 @@ export function buildPromptInjection(
     ? `\n\n**Artículos académicos encontrados (${sourceList.length} fuentes: ${sourceList.join(", ")}):**\n`
     : "\n\n**Artículos académicos encontrados:**\n";
 
+  // Strict anti-hallucination preamble. Academic users need to trust
+  // that every citation resolves to a real paper. A plausible-but-
+  // fabricated DOI or URL breaks their whole workflow.
+  const preamble = [
+    "⚠️ REGLAS CRÍTICAS PARA CITAR (no negociables):",
+    "- USA SOLAMENTE los artículos listados a continuación. NO inventes títulos, autores, revistas, años, DOIs ni URLs bajo ninguna circunstancia.",
+    "- Cuando cites un artículo, copia literalmente la línea URL (o DOI) tal como aparece en la lista. No modifiques subdominios, IDs ni extensiones.",
+    "- Si un artículo no tiene URL/DOI disponible en la lista, NO inventes uno — menciona el título y autores pero omite el enlace.",
+    "- Referencias numeradas [1], [2]... deben corresponder al índice del artículo en la lista. Nunca crees un [N] para un artículo que no esté listado.",
+    "- Si necesitas información que no está en las fuentes, dilo explícitamente (\"no hay evidencia en las fuentes recuperadas\") en lugar de rellenar con suposiciones.",
+    "",
+  ].join("\n");
+
   const body = results
     .map((p, i) => {
       const authors = p.authors.length > 0 ? p.authors.join(", ") : "No disponible";
@@ -228,7 +241,7 @@ export function buildPromptInjection(
     })
     .join("\n\n");
 
-  return header + body;
+  return header + preamble + body;
 }
 
 function buildApa(r: NormalisedResult): string {
