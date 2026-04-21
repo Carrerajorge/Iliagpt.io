@@ -7,6 +7,8 @@ import { responseCache } from "./responseCache";
 import { generateEmbedding } from "../embeddingService";
 import { searchWeb, searchScholar, needsWebSearch, needsAcademicSearch } from "./webSearch";
 import { academicEngineV3, generateAPACitation } from "./academicResearchEngineV3";
+import { runSearchBrainForChat } from "./searchBrain/chatAdapter";
+import { getSettingsAsync as getSearchBrainSettingsAsync } from "./searchBrain/settingsService";
 import { routeMessage } from "../agent/router";
 import { runPipeline } from "../agent/pipeline/engine";
 import type { ProgressUpdate } from "../agent/pipeline/types";
@@ -1617,10 +1619,39 @@ Responde de manera completa y profesional, adaptando el formato a lo que el usua
     if (!academicPolicyCheck.allowed) {
       console.log(`[ChatService:WebSearch] Academic search blocked by policy: ${academicPolicyCheck.reason}`);
     } else {
-      console.log(`[ChatService:WebSearch] Academic search triggered - using Academic Research Engine v3.0`);
+      console.log(`[ChatService:WebSearch] Academic search triggered — trying SearchBrain (WebGLM pipeline) first`);
       const searchStartTime = Date.now();
+      let searchBrainSucceeded = false;
       try {
-        // Use the new Academic Research Engine v3.0 for better results
+        // Primary path: SearchBrain WebGLM pipeline — 10 providers, pgvector
+        // semantic cache, LLM reranker. Falls back to academicEngineV3
+        // on any error or empty result.
+        const userSettings = userId ? await getSearchBrainSettingsAsync(userId) : null;
+        const brainResult = await runSearchBrainForChat({
+          query: lastUserMessage.content,
+          userId,
+          mailto: userSettings?.mailto,
+          enableScrapingProviders: userSettings?.enableScrapingProviders,
+          maxContextPapers: 15,
+          maxSources: 20,
+        });
+        if (brainResult && brainResult.webSources.length > 0) {
+          webSearchInfo = brainResult.webSearchInfo;
+          webSources = brainResult.webSources;
+          searchBrainSucceeded = true;
+          await logToolCall(userId || "anonymous", "academic_search", "search_brain",
+            { query: lastUserMessage.content },
+            { count: brainResult.webSources.length, providers: brainResult.providersUsed, cache: brainResult.cache },
+            "success", Date.now() - searchStartTime);
+          console.log(`[ChatService:SearchBrain] Found ${brainResult.webSources.length} sources from ${brainResult.providersUsed.join(", ")} (cache: ${brainResult.cache?.hit ? brainResult.cache.source : "miss"})`);
+        }
+      } catch (searchBrainErr) {
+        console.warn("[ChatService:SearchBrain] Primary path threw; falling back to academicEngineV3:", searchBrainErr);
+      }
+
+      // Fallback: legacy academicResearchEngineV3. Kept as a safety net so a
+      // SearchBrain regression never takes the chat search path down.
+      if (!searchBrainSucceeded) try {
         const engineResult = await academicEngineV3.search({
           query: lastUserMessage.content,
           maxResults: 20,
@@ -1638,7 +1669,6 @@ Responde de manera completa y profesional, adaptando el formato a lo que el usua
               `[${i + 1}] Autores: ${paper.authors.map(a => a.name).join(", ") || "No disponible"}\nAño: ${paper.year || "No disponible"}\nTítulo: ${paper.title}\nJournal: ${paper.journal || "No disponible"}\nDOI: ${paper.doi || "No disponible"}\nURL: ${paper.url || paper.doi ? `https://doi.org/${paper.doi}` : "No disponible"}\nResumen: ${(paper.abstract || "No disponible").substring(0, 300)}...\nCita APA 7: ${generateAPACitation(paper)}`
             ).join("\n\n");
 
-          // Capture web sources for citations
           webSources = engineResult.papers
             .filter(p => p.url || p.doi)
             .map(p => extractWebSource(
@@ -1651,7 +1681,7 @@ Responde de manera completa y profesional, adaptando el formato a lo que el usua
               p.doi ? `https://doi.org/${p.doi}` : undefined
             ));
 
-          console.log(`[ChatService:AcademicEngine] Found ${engineResult.papers.length} papers from ${engineResult.sources.map(s => s.name).join(", ")} in ${engineResult.searchTime}ms`);
+          console.log(`[ChatService:AcademicEngine] Fallback found ${engineResult.papers.length} papers from ${engineResult.sources.map(s => s.name).join(", ")} in ${engineResult.searchTime}ms`);
         }
       } catch (error) {
         await logToolCall(userId || "anonymous", "academic_search", "academic_engine",
