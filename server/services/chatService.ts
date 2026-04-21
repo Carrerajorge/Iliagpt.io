@@ -1614,7 +1614,15 @@ Responde de manera completa y profesional, adaptando el formato a lo que el usua
   // GATED: Only allowed when no attachments OR user explicitly requests web
   // Intent-aware: also triggers if intent engine detected a search/research intent
   const shouldSearchWeb = forceWebSearch || userExplicitlyRequestsWeb || featureFlags.webSearchAuto;
-  if (allowWebSearch && lastUserMessage && needsAcademicSearch(lastUserMessage.content) && shouldSearchWeb) {
+  // ACADEMIC EXCEPTION: when the user clearly asks for research (papers,
+  // articles, thesis, literature review, antecedentes, marco teórico), the
+  // search must fire REGARDLESS of attachments / feature flags. The whole
+  // reason someone uploads a thesis draft then says "dame 10 artículos
+  // sobre X" is to pull in fresh citations — blocking that is the bug the
+  // user keeps hitting. Their uploaded docs still feed the generation; we
+  // just don't refuse to look outside.
+  const userWantsAcademic = lastUserMessage && needsAcademicSearch(lastUserMessage.content);
+  if (lastUserMessage && userWantsAcademic && (allowWebSearch || userWantsAcademic) && (shouldSearchWeb || userWantsAcademic)) {
     const academicPolicyCheck = await enforcePolicyCheck("academic_search", "google_scholar");
     if (!academicPolicyCheck.allowed) {
       console.log(`[ChatService:WebSearch] Academic search blocked by policy: ${academicPolicyCheck.reason}`);

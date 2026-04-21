@@ -81,6 +81,21 @@ const ACADEMIC_PATTERNS = [
   /quiero.*cita/i,
   /papers?\s+acad[ée]micos?/i,
   /estudios?\s+acad[ée]micos?/i,
+
+  // BROADER TRIGGERS — keep the bar low for obvious research intent.
+  // Any mention of artículos / papers / tesis / investigación / antecedentes
+  // / marco teórico / revisión bibliográfica is treated as an academic
+  // search request, independent of surrounding grammar.
+  /\bart[ií]culos?\b/i,
+  /\bpapers?\b/i,
+  /\btesis\b/i,
+  /\bestudios?\s+(sobre|acerca|de)\b/i,
+  /\binvestigaciones?\b/i,
+  /\brevisi[óo]n\s+(sistem[áa]tica|narrativa|bibliogr[áa]fica)/i,
+  /\bmarco\s+te[óo]rico\b/i,
+  /\bantecedentes\b/i,
+  /\bstate[\s-]?of[\s-]?the[\s-]?art\b/i,
+  /\bliterature\s+review\b/i,
 ];
 
 const WEB_SEARCH_PATTERNS = [
