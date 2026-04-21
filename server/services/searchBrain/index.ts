@@ -9,8 +9,15 @@ import { retrieveFromProvider } from "./providerAdapter";
 import { runSearchBrain } from "./orchestrator";
 import { runWebSearch } from "./webOrchestrator";
 import { synthesiseDeepAnswer } from "./deepSynthesis";
-import { lookup as cacheLookup, write as cacheWrite } from "./searchCache";
+import {
+  lookup as cacheLookup,
+  write as cacheWrite,
+  computeQueryHash,
+  DEFAULT_TTL_SECONDS,
+} from "./searchCache";
 import type { CacheStore } from "./searchCache";
+import { redisLookup, redisWrite } from "./redisFastPath";
+import type { RedisClientLike } from "./redisClientFactory";
 import type {
   SearchBrainOptions,
   SearchBrainResponse,
@@ -84,8 +91,11 @@ export interface CacheControl {
   similarityThreshold?: number;
   /** Override TTL in seconds. */
   ttlSeconds?: number;
-  /** Injectable store for tests. */
+  /** Injectable Postgres store for tests. */
   store?: CacheStore;
+  /** Injectable Redis client for tests. When omitted, redisFastPath
+   *  falls back to REDIS_URL auto-detection. */
+  redisClient?: RedisClientLike;
 }
 
 /**
@@ -96,16 +106,26 @@ export interface CacheControl {
 export async function searchAcademic(
   options: SearchBrainOptions,
   cache?: CacheControl
-): Promise<SearchBrainResponse & { cache?: { hit: boolean; matchedBy?: "exact" | "semantic"; similarity?: number } }> {
+): Promise<SearchBrainResponse & { cache?: { hit: boolean; matchedBy?: "exact" | "semantic"; similarity?: number; source?: "redis" | "postgres" } }> {
   const deps: SearchBrainDeps = {
     callLLM: options.__deps?.callLLM ?? defaultCallLLM,
     retrieveFrom: options.__deps?.retrieveFrom ?? retrieveFromProvider,
     now: options.__deps?.now,
   };
 
-  // Cache read.
+  const queryHash = computeQueryHash("academic", options.query, options.sources);
+  const ttlSeconds = cache?.ttlSeconds ?? DEFAULT_TTL_SECONDS.academic;
+
+  // Cache read — Redis fast-path first, then Postgres exact + semantic.
   if (!cache?.bypass) {
-    const hit = await cacheLookup({
+    const redisHit = await redisLookup({ kind: "academic", queryHash, client: cache?.redisClient });
+    if (redisHit) {
+      return {
+        ...(redisHit as SearchBrainResponse),
+        cache: { hit: true, matchedBy: "exact", source: "redis" },
+      };
+    }
+    const pgHit = await cacheLookup({
       kind: "academic",
       query: options.query,
       sources: options.sources,
@@ -113,11 +133,19 @@ export async function searchAcademic(
       similarityThreshold: cache?.similarityThreshold,
       store: cache?.store,
     });
-    if (hit) {
-      const payload = hit.payload as SearchBrainResponse;
+    if (pgHit) {
+      const payload = pgHit.payload as SearchBrainResponse;
+      // Populate Redis so the next hit goes through the fast path.
+      await redisWrite({
+        kind: "academic",
+        queryHash,
+        payload,
+        ttlSeconds,
+        client: cache?.redisClient,
+      });
       return {
         ...payload,
-        cache: { hit: true, matchedBy: hit.matchedBy, similarity: hit.similarity },
+        cache: { hit: true, matchedBy: pgHit.matchedBy, similarity: pgHit.similarity, source: "postgres" },
       };
     }
   }
@@ -128,19 +156,22 @@ export async function searchAcademic(
   );
 
   if (!cache?.bypass) {
-    await cacheWrite({
-      kind: "academic",
-      query: options.query,
-      sources: options.sources,
-      embedding: cache?.embedding,
-      payload: result,
-      ttlSeconds: cache?.ttlSeconds,
-      store: cache?.store,
-      metadata: {
-        providerCount: result.providers.length,
-        resultCount: result.results.length,
-      },
-    });
+    await Promise.all([
+      cacheWrite({
+        kind: "academic",
+        query: options.query,
+        sources: options.sources,
+        embedding: cache?.embedding,
+        payload: result,
+        ttlSeconds: cache?.ttlSeconds,
+        store: cache?.store,
+        metadata: {
+          providerCount: result.providers.length,
+          resultCount: result.results.length,
+        },
+      }),
+      redisWrite({ kind: "academic", queryHash, payload: result, ttlSeconds, client: cache?.redisClient }),
+    ]);
   }
 
   return { ...result, cache: { hit: false } };
