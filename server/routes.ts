@@ -135,6 +135,7 @@ import { advancedAnalyticsRouter } from "./routes/admin/advancedAnalytics";
 import { requireAdmin as requireAdminMiddleware } from "./routes/admin/utils";
 import { automationsRouter } from "./routes/admin/automations";
 import { academicSearchRouter } from "./routes/academicSearchRouter";
+import { searchBrainRouter } from "./routes/searchBrainRouter";
 import { createSecurityRouter } from "./routes/securityRouter";
 import { createPrivacyRouter } from "./routes/privacyRouter";
 import { createMfaRouter } from "./routes/mfaRouter";
@@ -2094,6 +2095,7 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
   app.use("/api/admin/automations", automationsRouter);
   app.use("/api/governance", createGovernanceRouter());
   app.use("/api/academic", academicSearchRouter); // Scopus + Scholar academic search
+  app.use("/api/search-brain", searchBrainRouter); // WebGLM-style orchestrator over multi-source academic providers
   app.use("/api", createRegistryRouter());
   app.use("/api/word-pipeline", wordPipelineRoutes);
   app.use("/api/sse", redisSSERouter);
