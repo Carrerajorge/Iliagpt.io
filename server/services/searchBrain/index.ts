@@ -7,6 +7,8 @@
 import { llmGateway } from "../../lib/llmGateway";
 import { retrieveFromProvider } from "./providerAdapter";
 import { runSearchBrain } from "./orchestrator";
+import { runWebSearch } from "./webOrchestrator";
+import { synthesiseDeepAnswer } from "./deepSynthesis";
 import type {
   SearchBrainOptions,
   SearchBrainResponse,
@@ -15,6 +17,8 @@ import type {
   ProviderDescriptor,
   NormalisedResult,
 } from "./types";
+import type { WebOrchestratorOptions, WebOrchestratorResponse, WebSource } from "./webOrchestrator";
+import type { DeepSynthesisInput, DeepSynthesisResponse } from "./deepSynthesis";
 
 export type {
   SearchBrainOptions,
@@ -23,9 +27,16 @@ export type {
   SearchBrainSource,
   ProviderDescriptor,
   NormalisedResult,
+  WebOrchestratorOptions,
+  WebOrchestratorResponse,
+  WebSource,
+  DeepSynthesisInput,
+  DeepSynthesisResponse,
 };
 
 export { DEFAULT_ACADEMIC_SOURCES, DEFAULT_WEIGHTS } from "./types";
+export { DEFAULT_WEB_SOURCES } from "./webOrchestrator";
+export { runWebSearch, synthesiseDeepAnswer };
 
 // ─── Default LLM adapter ──────────────────────────────────────────────────
 
@@ -75,6 +86,59 @@ export async function searchAcademic(
     { ...options, __deps: deps },
     { retrieveFrom: retrieveFromProvider }
   );
+}
+
+/** Deep search: fuses academic + web + LLM synthesis with APA 7 refs. */
+export async function searchDeep(args: {
+  query: string;
+  academicSources?: SearchBrainSource[];
+  webSources?: WebSource[];
+  maxAcademic?: number;
+  maxWeb?: number;
+  userId?: string;
+  mailto?: string;
+  enableScrapingProviders?: boolean;
+  rerank?: boolean;
+  language?: "es" | "en" | "auto";
+  __deps?: SearchBrainDeps;
+}): Promise<{
+  query: string;
+  academic: SearchBrainResponse;
+  web: WebOrchestratorResponse;
+  synthesis: DeepSynthesisResponse;
+}> {
+  const deps: SearchBrainDeps = {
+    callLLM: args.__deps?.callLLM ?? defaultCallLLM,
+    retrieveFrom: args.__deps?.retrieveFrom ?? retrieveFromProvider,
+    now: args.__deps?.now,
+  };
+  const [academic, web] = await Promise.all([
+    searchAcademic({
+      query: args.query,
+      sources: args.academicSources,
+      maxResults: args.maxAcademic ?? 10,
+      userId: args.userId,
+      mailto: args.mailto,
+      enableScrapingProviders: args.enableScrapingProviders,
+      rerank: args.rerank,
+      language: args.language,
+      __deps: deps,
+    }),
+    runWebSearch({
+      query: args.query,
+      sources: args.webSources,
+      maxResults: args.maxWeb ?? 10,
+      language: args.language === "auto" ? undefined : args.language,
+    }),
+  ]);
+  const synthesis = await synthesiseDeepAnswer({
+    query: args.query,
+    academic: academic.results,
+    web: web.results,
+    userId: args.userId,
+    deps,
+  });
+  return { query: args.query, academic, web, synthesis };
 }
 
 // ─── Provider catalog (surfaced by GET /providers) ────────────────────────

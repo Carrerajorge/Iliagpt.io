@@ -16,10 +16,14 @@ import { Router, type Request, type Response } from "express";
 import { sanitizeSearchQuery } from "../lib/textSanitizers";
 import {
   searchAcademic,
+  searchDeep,
+  runWebSearch,
   PROVIDER_CATALOG,
   DEFAULT_ACADEMIC_SOURCES,
+  DEFAULT_WEB_SOURCES,
 } from "../services/searchBrain";
-import type { SearchBrainSource, SearchBrainOptions } from "../services/searchBrain";
+import type { SearchBrainSource, SearchBrainOptions, WebSource } from "../services/searchBrain";
+import { getSettings, updateSettings } from "../services/searchBrain/settingsService";
 
 export const searchBrainRouter = Router();
 
@@ -41,6 +45,8 @@ const VALID_SOURCES = new Set<SearchBrainSource>([
   "wos",
 ]);
 
+const VALID_WEB_SOURCES = new Set<WebSource>(["searxng", "duckduckgo", "wikipedia"]);
+
 function validateQuery(raw: unknown): { valid: true; query: string } | { valid: false; error: string } {
   if (typeof raw !== "string") {
     return { valid: false, error: "query is required and must be a string" };
@@ -58,6 +64,17 @@ function validateSources(raw: unknown): SearchBrainSource[] | undefined {
     if (typeof item !== "string") continue;
     const k = item.trim().toLowerCase() as SearchBrainSource;
     if (VALID_SOURCES.has(k)) out.push(k);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function validateWebSources(raw: unknown): WebSource[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: WebSource[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const k = item.trim().toLowerCase() as WebSource;
+    if (VALID_WEB_SOURCES.has(k)) out.push(k);
   }
   return out.length > 0 ? out : undefined;
 }
@@ -101,7 +118,106 @@ searchBrainRouter.get("/providers", (_req, res) => {
   res.json({
     defaults: [...DEFAULT_ACADEMIC_SOURCES],
     providers: PROVIDER_CATALOG,
+    webDefaults: [...DEFAULT_WEB_SOURCES],
+    webProviders: [
+      { id: "wikipedia", name: "Wikipedia (REST + OpenSearch)", type: "api", rateLimitNote: "Public API. No key required." },
+      { id: "duckduckgo", name: "DuckDuckGo (HTML)", type: "scraping", rateLimitNote: "Single HTML request per call; keep frequency low." },
+      { id: "searxng", name: "SearXNG (rotated public instances)", type: "api", rateLimitNote: "Instances rotate until one returns. Self-host recommended for heavy use." },
+    ],
   });
+});
+
+// ─── POST /api/search-brain/web ───────────────────────────────────────────
+searchBrainRouter.post("/web", async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const queryResult = validateQuery(body.query);
+    if (!queryResult.valid) {
+      res.status(400).json({ error: queryResult.error });
+      return;
+    }
+    const out = await runWebSearch({
+      query: queryResult.query,
+      sources: validateWebSources(body.sources),
+      maxResults: validateMaxResults(body.maxResults),
+      timeoutMs: typeof body.timeoutMs === "number" ? Math.min(30000, Math.max(1000, body.timeoutMs)) : undefined,
+      language: validateLanguage(body.language) === "auto" ? undefined : validateLanguage(body.language),
+    });
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "internal error" });
+  }
+});
+
+// ─── POST /api/search-brain/deep ──────────────────────────────────────────
+searchBrainRouter.post("/deep", async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const queryResult = validateQuery(body.query);
+    if (!queryResult.valid) {
+      res.status(400).json({ error: queryResult.error });
+      return;
+    }
+    const userId = extractUserId(req);
+    const settings = getSettings(userId);
+    const out = await searchDeep({
+      query: queryResult.query,
+      academicSources: validateSources(body.academicSources),
+      webSources: validateWebSources(body.webSources),
+      maxAcademic: typeof body.maxAcademic === "number" ? Math.min(20, Math.max(1, body.maxAcademic)) : undefined,
+      maxWeb: typeof body.maxWeb === "number" ? Math.min(20, Math.max(1, body.maxWeb)) : undefined,
+      userId,
+      mailto: extractMailto(req) ?? settings.mailto,
+      enableScrapingProviders: body.enableScrapingProviders === true || settings.enableScrapingProviders,
+      rerank: body.rerank === false ? false : true,
+      language: validateLanguage(body.language),
+    });
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "internal error" });
+  }
+});
+
+// ─── GET + POST /api/search-brain/settings ────────────────────────────────
+searchBrainRouter.get("/settings", (req: Request, res: Response) => {
+  const userId = extractUserId(req);
+  const s = getSettings(userId);
+  // Never echo back the raw key — return length only for verification.
+  res.json({
+    mailto: s.mailto ?? null,
+    enableScrapingProviders: s.enableScrapingProviders,
+    coreApiKeyPresent: Boolean(s.coreApiKey),
+    updatedAt: s.updatedAt,
+  });
+});
+
+searchBrainRouter.post("/settings", (req: Request, res: Response) => {
+  try {
+    const userId = extractUserId(req);
+    if (!userId) {
+      res.status(401).json({ error: "settings require an authenticated user" });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = updateSettings(userId, {
+      mailto: body.mailto,
+      coreApiKey: body.coreApiKey,
+      enableScrapingProviders: body.enableScrapingProviders,
+    });
+    if (!result.ok) {
+      res.status(400).json({ ok: false, errors: result.errors });
+      return;
+    }
+    res.json({
+      ok: true,
+      mailto: result.settings.mailto ?? null,
+      enableScrapingProviders: result.settings.enableScrapingProviders,
+      coreApiKeyPresent: Boolean(result.settings.coreApiKey),
+      updatedAt: result.settings.updatedAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "internal error" });
+  }
 });
 
 /**
