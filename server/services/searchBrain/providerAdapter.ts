@@ -29,6 +29,7 @@ import {
   searchWOS,
 } from "../unifiedAcademicSearch";
 import { searchRedalyc } from "./redalycProvider";
+import { scrapeScopus, scrapeWos } from "./browserScraper";
 import type { NormalisedResult, SearchBrainSource } from "./types";
 
 // ─── Normalisation ────────────────────────────────────────────────────────
@@ -92,9 +93,14 @@ const WRAPPED: Partial<Record<SearchBrainSource, ProviderFn>> = {
   pubmed: searchPubMed,
   arxiv: searchArXiv,
   base: searchBASE,
-  scopus: searchScopus,
-  wos: searchWOS,
+  // scopus + wos are routed to the opt-in browser scraper below.
+  // They still appear in unifiedAcademicSearch (searchScopus / searchWOS)
+  // as HTTP-level fallbacks we purposely avoid — both endpoints require
+  // an institutional session and the unified paths produce empty results
+  // most of the time. The Playwright-driven path is honest about that.
 };
+void searchScopus;
+void searchWOS;
 
 // Scholar wrapping kept for completeness even though SearchBrain doesn't
 // ship it in DEFAULT_ACADEMIC_SOURCES (Scholar has no real API and we
@@ -127,6 +133,18 @@ export async function retrieveFromProvider(args: {
     results = await withTimeout(
       searchRedalyc({ query, maxResults, timeoutMs }),
       timeoutMs
+    );
+  } else if (source === "scopus") {
+    // Browser-automated scrape gated by the orchestrator's
+    // enableScrapingProviders flag (scopus never reaches here without it).
+    results = await withTimeout(
+      scrapeScopus({ query, maxResults, timeoutMs }),
+      Math.max(timeoutMs, 20000),
+    );
+  } else if (source === "wos") {
+    results = await withTimeout(
+      scrapeWos({ query, maxResults, timeoutMs }),
+      Math.max(timeoutMs, 20000),
     );
   } else {
     const fn = WRAPPED[source];
