@@ -596,11 +596,50 @@ async function runStreamSearchPreflight({
     const doWeb = requestedWebSearch ? !doAcademic : needsWebSearch(trimmedQuery);
 
     if (doAcademic) {
-      console.log("[Stream] Academic search", {
-        mode: requestedWebSearch ? "requested" : "auto",
-        queryPreview: trimmedQuery.slice(0, 60),
-      });
+      console.log("[Stream] Academic search — trying SearchBrain (WebGLM) first");
+      // Primary: SearchBrain WebGLM pipeline (10 providers + pgvector
+      // cache + LLM reranker). Falls back to academicEngineV3 on any
+      // failure so the stream path never regresses.
+      let searchBrainSucceeded = false;
       try {
+        const { runSearchBrainForChat } = await import("../services/searchBrain/chatAdapter");
+        const { getSettingsAsync: getSearchBrainSettingsAsync } = await import("../services/searchBrain/settingsService");
+        const brainSettings = userId ? await getSearchBrainSettingsAsync(userId) : null;
+        const brainResult = await runSearchBrainForChat({
+          query: trimmedQuery,
+          userId,
+          mailto: brainSettings?.mailto,
+          enableScrapingProviders: brainSettings?.enableScrapingProviders,
+          maxContextPapers: 15,
+          maxSources: 20,
+        });
+        if (brainResult && brainResult.webSources.length > 0) {
+          result.webSearchContextForLLM =
+            `\n\n---\nARTÍCULOS ACADÉMICOS ENCONTRADOS (${brainResult.webSources.length} resultados de ${brainResult.providersUsed.join(", ")}):\n${brainResult.webSearchInfo}\n\nINSTRUCCIÓN CRÍTICA SOBRE LA BÚSQUEDA ACADÉMICA:\n- Usa estos artículos para responder con detalle y precisión.\n- Incluye citas APA y URLs siempre que sea posible.\n- Muestra los URLs de forma directa (no envueltos en texto) para que sean clickables.\n- Apoya las afirmaciones importantes con referencias explícitas [número].`;
+          // Map to the SSE-level source shape. The chatAdapter already
+          // emits the chat-service-compatible WebSource, so we only need
+          // to rename a couple of fields (publishedDate vs date).
+          result.detectedWebSources = brainResult.webSources.map((ws) => ({
+            url: ws.url,
+            title: ws.title,
+            snippet: ws.snippet ?? "",
+            domain: ws.domain,
+            favicon: ws.favicon ?? `https://www.google.com/s2/favicons?domain=${ws.domain}&sz=64`,
+            imageUrl: ws.imageUrl ?? null,
+            siteName: ws.siteName ?? ws.domain,
+            publishedDate: ws.date ?? null,
+            metadata: ws.metadata,
+          }));
+          result.searchQueries.push({ query: trimmedQuery, resultCount: brainResult.webSources.length, status: "completed" });
+          result.totalSearches = 1;
+          searchBrainSucceeded = true;
+          console.log(`[Stream] SearchBrain complete: ${brainResult.webSources.length} sources from ${brainResult.providersUsed.join(", ")}`);
+        }
+      } catch (brainError) {
+        console.warn("[Stream] SearchBrain primary path threw; falling back to academicEngineV3:", brainError);
+      }
+
+      if (!searchBrainSucceeded) try {
         const engineResult = await academicEngineV3.search({
           query: trimmedQuery,
           maxResults: 15,
@@ -620,18 +659,29 @@ async function runStreamSearchPreflight({
           result.webSearchContextForLLM =
             `\n\n---\nARTÍCULOS ACADÉMICOS ENCONTRADOS (${engineResult.papers.length} resultados de ${engineResult.sources.map((source) => source.name).join(", ")}):\n\n${academicContext}\n\nINSTRUCCIÓN CRÍTICA SOBRE LA BÚSQUEDA ACADÉMICA:\n- Usa estos artículos para responder con detalle y precisión.\n- Incluye citas APA y URLs siempre que sea posible.\n- Apoya las afirmaciones importantes con referencias explícitas [número].`;
 
-          result.detectedWebSources = engineResult.papers.slice(0, 10).map((paper) => ({
-            url: paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : ""),
-            title: paper.title,
-            snippet: paper.abstract?.substring(0, 200) || "",
-            domain: paper.journal || "Academic",
-            favicon: null,
-            imageUrl: null,
-            siteName: paper.journal || engineResult.sources[0]?.name || "Academic Source",
-            publishedDate: paper.year ? `${paper.year}` : null,
-          }));
+          // Domain for favicons: prefer the URL hostname over the journal
+          // name. Google's favicon service needs a real hostname.
+          const domainFromUrl = (url: string | undefined | null): string => {
+            if (!url) return "";
+            try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+          };
 
-          console.log("[Stream] Academic search complete", { papers: engineResult.papers.length });
+          result.detectedWebSources = engineResult.papers.slice(0, 10).map((paper) => {
+            const url = paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : "");
+            const domain = domainFromUrl(url) || paper.journal || "Academic";
+            return {
+              url,
+              title: paper.title,
+              snippet: paper.abstract?.substring(0, 200) || "",
+              domain,
+              favicon: domain.includes(".") ? `https://www.google.com/s2/favicons?domain=${domain}&sz=64` : null,
+              imageUrl: null,
+              siteName: paper.journal || engineResult.sources[0]?.name || "Academic Source",
+              publishedDate: paper.year ? `${paper.year}` : null,
+            };
+          });
+
+          console.log("[Stream] Academic fallback complete", { papers: engineResult.papers.length });
           result.searchQueries.push({ query: trimmedQuery, resultCount: engineResult.papers.length, status: "completed" });
           result.totalSearches = 1;
         }
