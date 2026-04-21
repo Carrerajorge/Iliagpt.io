@@ -502,6 +502,49 @@ export const insertCachedPageSchema = createInsertSchema(cachedPages).omit({
 export type InsertCachedPage = z.infer<typeof insertCachedPageSchema>;
 export type CachedPage = typeof cachedPages.$inferSelect;
 
+/**
+ * SearchBrain cache — persistent result store with both exact-hit
+ * (queryHash) and semantic (embedding vector) lookup paths. Powers
+ * the Phase 1c cache layer in server/services/searchBrain/searchCache.ts.
+ *
+ * Cache keys: (queryHash, kind). "kind" is one of 'academic' | 'web' |
+ * 'deep' so a user asking the same question through different surfaces
+ * keeps distinct entries.
+ *
+ * expiresAt is precomputed from cachedAt + ttlSeconds so cleanup jobs
+ * can DELETE WHERE expires_at < now() without parsing TTL.
+ */
+export const searchBrainCache = pgTable(
+  "search_brain_cache",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    queryHash: text("query_hash").notNull(),
+    queryText: text("query_text").notNull(),
+    kind: text("kind").notNull(),
+    embedding: vector("embedding"),
+    payload: jsonb("payload").notNull(),
+    cachedAt: timestamp("cached_at").defaultNow().notNull(),
+    ttlSeconds: integer("ttl_seconds").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    metadata: jsonb("metadata"),
+  },
+  (table) => [
+    uniqueIndex("search_brain_cache_hash_kind_idx").on(table.queryHash, table.kind),
+    index("search_brain_cache_expires_at_idx").on(table.expiresAt),
+    index("search_brain_cache_kind_idx").on(table.kind),
+  ]
+);
+
+export const insertSearchBrainCacheSchema = createInsertSchema(searchBrainCache).omit({
+  id: true,
+  cachedAt: true,
+}).extend({
+  embedding: z.array(z.number()).nullish(),
+});
+
+export type InsertSearchBrainCache = z.infer<typeof insertSearchBrainCacheSchema>;
+export type SearchBrainCache = typeof searchBrainCache.$inferSelect;
+
 export const domainPolicies = pgTable("domain_policies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   domain: text("domain").notNull().unique(),

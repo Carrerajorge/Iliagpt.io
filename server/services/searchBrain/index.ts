@@ -9,6 +9,8 @@ import { retrieveFromProvider } from "./providerAdapter";
 import { runSearchBrain } from "./orchestrator";
 import { runWebSearch } from "./webOrchestrator";
 import { synthesiseDeepAnswer } from "./deepSynthesis";
+import { lookup as cacheLookup, write as cacheWrite } from "./searchCache";
+import type { CacheStore } from "./searchCache";
 import type {
   SearchBrainOptions,
   SearchBrainResponse,
@@ -70,22 +72,78 @@ async function defaultCallLLM(args: {
 }
 
 /**
+ * Extra knobs for cache behaviour. Kept separate from SearchBrainOptions
+ * so the legacy /academic contract is unchanged.
+ */
+export interface CacheControl {
+  /** Skip reading from AND writing to the cache for this call. */
+  bypass?: boolean;
+  /** Optional precomputed embedding for the semantic-cache fallback. */
+  embedding?: number[];
+  /** Override default cosine threshold (default 0.92). */
+  similarityThreshold?: number;
+  /** Override TTL in seconds. */
+  ttlSeconds?: number;
+  /** Injectable store for tests. */
+  store?: CacheStore;
+}
+
+/**
  * Production entrypoint. Wires the default LLM + provider adapter and
  * delegates to the orchestrator. Tests call `runSearchBrain` directly
  * with their own deps.
  */
 export async function searchAcademic(
-  options: SearchBrainOptions
-): Promise<SearchBrainResponse> {
+  options: SearchBrainOptions,
+  cache?: CacheControl
+): Promise<SearchBrainResponse & { cache?: { hit: boolean; matchedBy?: "exact" | "semantic"; similarity?: number } }> {
   const deps: SearchBrainDeps = {
     callLLM: options.__deps?.callLLM ?? defaultCallLLM,
     retrieveFrom: options.__deps?.retrieveFrom ?? retrieveFromProvider,
     now: options.__deps?.now,
   };
-  return runSearchBrain(
+
+  // Cache read.
+  if (!cache?.bypass) {
+    const hit = await cacheLookup({
+      kind: "academic",
+      query: options.query,
+      sources: options.sources,
+      embedding: cache?.embedding,
+      similarityThreshold: cache?.similarityThreshold,
+      store: cache?.store,
+    });
+    if (hit) {
+      const payload = hit.payload as SearchBrainResponse;
+      return {
+        ...payload,
+        cache: { hit: true, matchedBy: hit.matchedBy, similarity: hit.similarity },
+      };
+    }
+  }
+
+  const result = await runSearchBrain(
     { ...options, __deps: deps },
     { retrieveFrom: retrieveFromProvider }
   );
+
+  if (!cache?.bypass) {
+    await cacheWrite({
+      kind: "academic",
+      query: options.query,
+      sources: options.sources,
+      embedding: cache?.embedding,
+      payload: result,
+      ttlSeconds: cache?.ttlSeconds,
+      store: cache?.store,
+      metadata: {
+        providerCount: result.providers.length,
+        resultCount: result.results.length,
+      },
+    });
+  }
+
+  return { ...result, cache: { hit: false } };
 }
 
 /** Deep search: fuses academic + web + LLM synthesis with APA 7 refs. */
