@@ -545,6 +545,29 @@ export const insertSearchBrainCacheSchema = createInsertSchema(searchBrainCache)
 export type InsertSearchBrainCache = z.infer<typeof insertSearchBrainCacheSchema>;
 export type SearchBrainCache = typeof searchBrainCache.$inferSelect;
 
+/**
+ * Per-user SearchBrain preferences. Replaces the Phase 1b in-memory
+ * store. Keyed by user_id (primary key) so each login has at most one
+ * row; upserts on POST /api/search-brain/settings.
+ *
+ * core_api_key is stored verbatim; the /settings endpoint masks it on
+ * read and ONLY returns a presence boolean to the client.
+ */
+export const userSearchBrainSettings = pgTable("user_search_brain_settings", {
+  userId: varchar("user_id").primaryKey(),
+  mailto: text("mailto"),
+  coreApiKey: text("core_api_key"),
+  enableScrapingProviders: boolean("enable_scraping_providers").notNull().default(false),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertUserSearchBrainSettingsSchema = createInsertSchema(userSearchBrainSettings).omit({
+  updatedAt: true,
+});
+
+export type InsertUserSearchBrainSettings = z.infer<typeof insertUserSearchBrainSettingsSchema>;
+export type UserSearchBrainSettings = typeof userSearchBrainSettings.$inferSelect;
+
 export const domainPolicies = pgTable("domain_policies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   domain: text("domain").notNull().unique(),

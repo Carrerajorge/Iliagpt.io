@@ -9,6 +9,7 @@ const EXTRA_MIGRATIONS = [
   path.resolve(process.cwd(), "migrations", "0102_add_derived_amount_columns.sql"),
   path.resolve(process.cwd(), "migrations", "0103_add_office_engine_tables.sql"),
   path.resolve(process.cwd(), "migrations", "0104_add_search_brain_cache.sql"),
+  path.resolve(process.cwd(), "migrations", "0105_add_search_brain_settings.sql"),
   path.resolve(process.cwd(), "migrations", "migrations", "fix_oauth_states.sql"),
 ] as const;
 

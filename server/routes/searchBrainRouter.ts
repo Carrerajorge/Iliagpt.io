@@ -23,7 +23,7 @@ import {
   DEFAULT_WEB_SOURCES,
 } from "../services/searchBrain";
 import type { SearchBrainSource, SearchBrainOptions, WebSource } from "../services/searchBrain";
-import { getSettings, updateSettings } from "../services/searchBrain/settingsService";
+import { getSettingsAsync, updateSettingsAsync } from "../services/searchBrain/settingsService";
 
 export const searchBrainRouter = Router();
 
@@ -159,7 +159,7 @@ searchBrainRouter.post("/deep", async (req: Request, res: Response) => {
       return;
     }
     const userId = extractUserId(req);
-    const settings = getSettings(userId);
+    const settings = await getSettingsAsync(userId);
     const out = await searchDeep({
       query: queryResult.query,
       academicSources: validateSources(body.academicSources),
@@ -179,19 +179,23 @@ searchBrainRouter.post("/deep", async (req: Request, res: Response) => {
 });
 
 // ─── GET + POST /api/search-brain/settings ────────────────────────────────
-searchBrainRouter.get("/settings", (req: Request, res: Response) => {
-  const userId = extractUserId(req);
-  const s = getSettings(userId);
-  // Never echo back the raw key — return length only for verification.
-  res.json({
-    mailto: s.mailto ?? null,
-    enableScrapingProviders: s.enableScrapingProviders,
-    coreApiKeyPresent: Boolean(s.coreApiKey),
-    updatedAt: s.updatedAt,
-  });
+searchBrainRouter.get("/settings", async (req: Request, res: Response) => {
+  try {
+    const userId = extractUserId(req);
+    const s = await getSettingsAsync(userId);
+    // Never echo back the raw key — return presence boolean only.
+    res.json({
+      mailto: s.mailto ?? null,
+      enableScrapingProviders: s.enableScrapingProviders,
+      coreApiKeyPresent: Boolean(s.coreApiKey),
+      updatedAt: s.updatedAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "internal error" });
+  }
 });
 
-searchBrainRouter.post("/settings", (req: Request, res: Response) => {
+searchBrainRouter.post("/settings", async (req: Request, res: Response) => {
   try {
     const userId = extractUserId(req);
     if (!userId) {
@@ -199,7 +203,7 @@ searchBrainRouter.post("/settings", (req: Request, res: Response) => {
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const result = updateSettings(userId, {
+    const result = await updateSettingsAsync(userId, {
       mailto: body.mailto,
       coreApiKey: body.coreApiKey,
       enableScrapingProviders: body.enableScrapingProviders,
