@@ -2,7 +2,9 @@
 
 import type { CSSProperties } from "react";
 
-import "@/components/dotmatrix-loader.css";
+// NOTE: dotmatrix-loader.css is imported from client/src/index.css (app entry)
+// instead of here — importing CSS from this module pulled it into the vitest
+// module graph, where the PostCSS pipeline (Tailwind 4) cannot process it.
 import { useDotMatrixPhases, usePrefersReducedMotion } from "@/lib/dotmatrix-hooks";
 
 export type MatrixPattern = "diamond" | "full" | "outline" | "rose" | "cross" | "rings";

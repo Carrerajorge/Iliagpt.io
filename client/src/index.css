@@ -10,6 +10,7 @@
 @import "./styles/marketing-minimal.css";
 @import "./styles/accessibility.css";
 @import "./styles/gpt-category-effects.css";
+@import "./components/dotmatrix-loader.css";
 
 @custom-variant dark (&:is(.dark *));
 
