@@ -4,6 +4,11 @@
     "nativeName": "Azərbaycanca",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Düşünür…",
+    "thinkingDuration": "{seconds} san düşündü",
+    "thinkingToolArgs": "Arqumentlərə bax",
+    "thinkingTraceLabel": "Köməkçinin düşüncəsi"
+  },
   "literals": {}
 }

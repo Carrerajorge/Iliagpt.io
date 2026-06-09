@@ -48,6 +48,7 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
 const Home = lazyWithRetry(() => import("@/pages/home"));
 const ProjectWorkspace = lazyWithRetry(() => import("@/pages/project-workspace"));
 const OpenClawPage = lazyWithRetry(() => import("@/pages/openclaw"));
+import { OpenClawPrewarm } from "@/components/openclaw/OpenClawPrewarm";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { PlatformSettingsProvider, usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { isAdminUser } from "@/lib/admin";
@@ -426,6 +427,7 @@ function AppContent() {
     }}>
       <SkipLink />
       <OfflineIndicator />
+      {/* OpenClawPrewarm disabled to keep the main app surface as light as possible. */}
       {/* AuthCallbackHandler removed, moved to AuthProvider */}
       <GlobalKeyboardShortcuts />
       <WorkspaceAnalyticsTracker />

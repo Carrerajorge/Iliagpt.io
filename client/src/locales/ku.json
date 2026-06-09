@@ -4,6 +4,11 @@
     "nativeName": "Kurdî",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Difikire…",
+    "thinkingDuration": "{seconds} çirke fikirî",
+    "thinkingToolArgs": "Argumanan bibîne",
+    "thinkingTraceLabel": "Ramana alîkar"
+  },
   "literals": {}
 }

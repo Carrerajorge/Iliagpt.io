@@ -4,6 +4,11 @@
     "nativeName": "ខ្មែរ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "កំពុងគិត…",
+    "thinkingDuration": "បានគិតរយៈពេល {seconds} វិនាទី",
+    "thinkingToolArgs": "មើលអាគុយម៉ង់",
+    "thinkingTraceLabel": "ការវែកញែករបស់ជំនួយការ"
+  },
   "literals": {}
 }

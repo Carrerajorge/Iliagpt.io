@@ -4,6 +4,11 @@
     "nativeName": "Dansk",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Tænker…",
+    "thinkingDuration": "Tænkte i {seconds} sek.",
+    "thinkingToolArgs": "Vis argumenter",
+    "thinkingTraceLabel": "Assistentens ræsonnement"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "ไทย",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "กำลังคิด…",
+    "thinkingDuration": "คิดเป็นเวลา {seconds} วินาที",
+    "thinkingToolArgs": "ดูอาร์กิวเมนต์",
+    "thinkingTraceLabel": "การให้เหตุผลของผู้ช่วย"
+  },
   "literals": {}
 }

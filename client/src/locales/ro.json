@@ -4,6 +4,11 @@
     "nativeName": "Română",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Se gândește…",
+    "thinkingDuration": "S-a gândit {seconds} s",
+    "thinkingToolArgs": "Vezi argumentele",
+    "thinkingTraceLabel": "Raționamentul asistentului"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "ગુજરાતી",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "વિચારી રહ્યું છે…",
+    "thinkingDuration": "{seconds} સેકન્ડ વિચાર્યું",
+    "thinkingToolArgs": "દલીલો જુઓ",
+    "thinkingTraceLabel": "સહાયકનું તર્ક"
+  },
   "literals": {}
 }

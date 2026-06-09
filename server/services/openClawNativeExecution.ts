@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import type { EmbeddedPiRunResult } from "./superIntelligence/agents/pi-embedded.js";
 import { resolveUserScopedAgentDir } from "./userScopedAgentDir.js";
 
@@ -119,7 +120,13 @@ function collectMediaUrls(result: EmbeddedPiRunResult): string[] {
 
 async function loadEmbeddedPiAgentRunner() {
   try {
-    const mod = await import("./superIntelligence/agents/pi-embedded.js");
+    const require = createRequire(import.meta.url);
+    const openClawMainPath = require.resolve("openclaw");
+    const packagedRunnerPath = path.join(
+      path.dirname(openClawMainPath),
+      "run-embedded.runtime.js",
+    );
+    const mod = await import(packagedRunnerPath);
     return mod.runEmbeddedPiAgent;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

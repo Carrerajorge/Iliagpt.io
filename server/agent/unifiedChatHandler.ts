@@ -151,6 +151,10 @@ export class SseBufferedWriter {
     const conversationId = typeof streamMeta?.conversationId === "string" ? streamMeta.conversationId : undefined;
 
     writeSse(this.res, 'chunk', {
+      // Typed-event marker for the extended-thinking stream protocol: `chunk`
+      // events carry the visible answer text (kept as `chunk` for backward
+      // compatibility with existing consumers — desktop app, extension).
+      type: 'text_delta',
       content: this.buffer,
       sequence: this.seq,
       runId: this.runId,

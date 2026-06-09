@@ -239,6 +239,14 @@ const isSafePythonAgentReadOnly =
 const isOpenClawInternet =
   req.method === "POST" && /^\/api\/openclaw\/internet\/(fetch|search)$/.test(pathOnly);
 
+const isOpenClawNativeExecReadOnly =
+  req.method === "POST" &&
+  (
+    /^\/api\/openclaw\/runtime\/native\/exec$/.test(pathOnly) ||
+    /^\/openclaw\/runtime\/native\/exec$/.test(pathOnly)
+  ) &&
+  (req.body as any)?.enableTools !== true;
+
 const isSafeReadOnlyHealth =
   req.method === "GET" && (/^\/api\/python-agent\/health$/.test(pathOnly) || /^\/api\/python-agent\/status$/.test(pathOnly));
 
@@ -250,7 +258,8 @@ if (
   isTerminalFileNoApi ||
   isSafePythonAgentReadOnly ||
   isSafeReadOnlyHealth ||
-  isOpenClawInternet
+  isOpenClawInternet ||
+  isOpenClawNativeExecReadOnly
 ) {
   return next();
 }

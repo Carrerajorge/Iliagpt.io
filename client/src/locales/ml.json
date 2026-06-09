@@ -4,6 +4,11 @@
     "nativeName": "മലയാളം",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ചിന്തിക്കുന്നു…",
+    "thinkingDuration": "{seconds} സെക്കൻഡ് ചിന്തിച്ചു",
+    "thinkingToolArgs": "ആർഗ്യുമെന്റുകൾ കാണുക",
+    "thinkingTraceLabel": "സഹായിയുടെ യുക്തി"
+  },
   "literals": {}
 }

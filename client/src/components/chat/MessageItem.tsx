@@ -205,6 +205,7 @@ export const MessageItem = memo(function MessageItem({
         prevProps.message.id === nextProps.message.id &&
         prevProps.message.clientTempId === nextProps.message.clientTempId &&
         prevProps.message.content === nextProps.message.content &&
+        prevProps.message.reasoning === nextProps.message.reasoning &&
         prevProps.message.role === nextProps.message.role &&
         prevProps.message.deliveryStatus === nextProps.message.deliveryStatus &&
         prevProps.message.deliveryError === nextProps.message.deliveryError &&

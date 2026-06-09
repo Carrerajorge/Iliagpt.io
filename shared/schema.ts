@@ -649,6 +649,8 @@ export const chatMessages = pgTable("chat_messages", {
   parentMessageId: varchar("parent_message_id"), // For branching: the message this branches from
   branchLabel: text("branch_label"),              // Optional label for this branch
   ragSources: jsonb("rag_sources"),               // RAG citation sources attached to this message
+  reasoning: text("reasoning"),                   // Extended-thinking text streamed before the answer (Claude-style CoT)
+  reasoningDetails: jsonb("reasoning_details"),   // Raw OpenRouter reasoning_details array (signed thinking blocks; re-sent for Anthropic tool-call chains)
   metadata: jsonb("metadata"), // Additional metadata for extensibility
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [

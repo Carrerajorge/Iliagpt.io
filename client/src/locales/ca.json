@@ -4,6 +4,11 @@
     "nativeName": "Català",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Pensant…",
+    "thinkingDuration": "Ha pensat durant {seconds} s",
+    "thinkingToolArgs": "Mostra els arguments",
+    "thinkingTraceLabel": "Raonament de l'assistent"
+  },
   "literals": {}
 }

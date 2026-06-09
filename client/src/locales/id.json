@@ -4,6 +4,11 @@
     "nativeName": "Bahasa Indonesia",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Berpikir…",
+    "thinkingDuration": "Berpikir selama {seconds} dtk",
+    "thinkingToolArgs": "Lihat argumen",
+    "thinkingTraceLabel": "Penalaran asisten"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "తెలుగు",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ఆలోచిస్తోంది…",
+    "thinkingDuration": "{seconds} సెకన్లు ఆలోచించింది",
+    "thinkingToolArgs": "ఆర్గ్యుమెంట్లను చూడండి",
+    "thinkingTraceLabel": "సహాయకుని తర్కం"
+  },
   "literals": {}
 }

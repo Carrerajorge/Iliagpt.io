@@ -4,6 +4,11 @@
     "nativeName": "ChiShona",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Kufunga…",
+    "thinkingDuration": "Akafunga kwemasekondi {seconds}",
+    "thinkingToolArgs": "Ona nharo",
+    "thinkingTraceLabel": "Kufunga kwemubatsiri"
+  },
   "literals": {}
 }

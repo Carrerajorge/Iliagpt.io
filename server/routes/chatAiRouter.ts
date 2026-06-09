@@ -77,6 +77,13 @@ type StreamProviderSwitch = {
 type StreamResponseStatus = "completed" | "incomplete" | "failed";
 type StreamIncompleteReason = "max_output_tokens" | "content_filter" | "stream_error" | "provider_error" | "timeout" | "truncated";
 
+type StreamToolCallDeltaEnvelope = {
+  index: number;
+  id?: string;
+  name?: string;
+  argsDelta?: string;
+};
+
 type StreamChunkEnvelope = {
   content: string;
   done?: boolean;
@@ -86,6 +93,12 @@ type StreamChunkEnvelope = {
   requestId?: string;
   status?: StreamResponseStatus;
   incompleteDetails?: { reason: StreamIncompleteReason } | null;
+  /** Extended-thinking delta forwarded from the LLM gateway (OpenRouter `delta.reasoning`). */
+  reasoning?: string;
+  /** Raw OpenRouter `reasoning_details` array, attached to the final chunk for persistence. */
+  reasoningDetails?: unknown[];
+  /** Partial tool-call deltas for the live tool-use trace. */
+  toolCalls?: StreamToolCallDeltaEnvelope[];
 };
 
 type StreamSearchQueryLog = {
@@ -4828,9 +4841,14 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         });
       }
 
-      const formattedMessages = messages.map((msg: { role: string; content: string }) => ({
+      const formattedMessages = messages.map((msg: { role: string; content: string; reasoning_details?: unknown[] }) => ({
         role: msg.role as "user" | "assistant" | "system",
-        content: msg.content
+        content: msg.content,
+        // Preserve signed thinking blocks for Anthropic tool-call chains; the
+        // gateway strips this field for models that do not understand it.
+        ...(msg.role === "assistant" && Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0
+          ? { reasoning_details: msg.reasoning_details }
+          : {}),
       }));
 
       const messagesWithSkill = skillSystemSection
@@ -5298,6 +5316,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     let fullContent = "";
     let lastAckSequence = -1;
     let agentLoopHandled = false;
+    // Extended thinking accumulators (persisted with the assistant message).
+    let streamReasoningText = "";
+    let streamReasoningDetails: unknown[] | null = null;
+    let streamReasoningDurationMs: number | null = null;
     let shouldRunModel = true;
     let skillSeedForModel = "";
     let skillExecutionResult: SkillExecutionResult | null = null;
@@ -7562,9 +7584,14 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         }
       }
 
-      const formattedMessages = messages.map((msg: { role: string; content: string }) => ({
+      const formattedMessages = messages.map((msg: { role: string; content: string; reasoning_details?: unknown[] }) => ({
         role: msg.role as "user" | "assistant" | "system",
-        content: msg.content
+        content: msg.content,
+        // Preserve signed thinking blocks for Anthropic tool-call chains; the
+        // gateway strips this field for models that do not understand it.
+        ...(msg.role === "assistant" && Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0
+          ? { reasoning_details: msg.reasoning_details }
+          : {}),
       }));
 
       // ── IMAGE VISION SUPPORT ──────────────────────────────────────
@@ -8564,6 +8591,31 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
         const onClose = () => writer.destroy();
         req.once("close", onClose);
 
+        // ── Extended thinking (Claude-style reasoning trace) ───────
+        // Reasoning deltas stream as typed `reasoning_delta` events BEFORE the
+        // visible answer; when the first text token arrives (or the stream
+        // ends) a `reasoning_done` event carries the total thinking duration.
+        let reasoningStartedAt: number | null = null;
+        let reasoningDoneEmitted = false;
+        let reasoningSeq = 0;
+
+        const emitReasoningDone = () => {
+          if (!reasoningStartedAt || reasoningDoneEmitted) return;
+          reasoningDoneEmitted = true;
+          streamReasoningDurationMs = Date.now() - reasoningStartedAt;
+          if (!isConnectionClosed) {
+            // Preserve ordering: any buffered text must land before the marker.
+            writer.flush();
+            writeSse(res, "reasoning_done", {
+              type: "reasoning_done",
+              durationMs: streamReasoningDurationMs,
+              runId: effectiveRunId,
+              requestId,
+              timestamp: Date.now(),
+            });
+          }
+        };
+
         for await (const chunk of streamGenerator) {
           // When client disconnects, keep consuming the LLM stream so fullContent
           // is complete for DB persistence. Skip SSE writes (client is gone).
@@ -8588,7 +8640,48 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
             activeStreamProvider = chunk.provider;
           }
 
+          if (chunk.reasoning) {
+            if (reasoningStartedAt === null) {
+              reasoningStartedAt = Date.now();
+            }
+            streamReasoningText += chunk.reasoning;
+            if (!clientGone) {
+              // Ordering: flush buffered text deltas before the reasoning delta.
+              writer.flush();
+              writeSse(res, "reasoning_delta", {
+                type: "reasoning_delta",
+                content: chunk.reasoning,
+                sequence: ++reasoningSeq,
+                runId: effectiveRunId,
+                requestId,
+                timestamp: Date.now(),
+              });
+            }
+          }
+
+          if (Array.isArray(chunk.toolCalls) && chunk.toolCalls.length > 0 && !clientGone) {
+            writer.flush();
+            for (const toolCall of chunk.toolCalls) {
+              writeSse(res, "tool_call_delta", {
+                type: "tool_call_delta",
+                index: toolCall.index,
+                ...(toolCall.id ? { id: toolCall.id } : {}),
+                ...(toolCall.name ? { name: toolCall.name } : {}),
+                ...(toolCall.argsDelta ? { argsDelta: toolCall.argsDelta } : {}),
+                runId: effectiveRunId,
+                requestId,
+                timestamp: Date.now(),
+              });
+            }
+          }
+
+          if (Array.isArray(chunk.reasoningDetails) && chunk.reasoningDetails.length > 0) {
+            streamReasoningDetails = chunk.reasoningDetails;
+          }
+
           if (chunk.content) {
+            // First visible token closes the thinking phase.
+            emitReasoningDone();
             markFirstToken();
           }
           fullContent += chunk.content;
@@ -8600,6 +8693,8 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
           }
 
           if (chunk.done) {
+            // Reasoning-only termination (no visible token closed the phase).
+            emitReasoningDone();
             if (!clientGone) {
               // Flush remaining buffered content before done event
               writer.finalize();
@@ -8615,6 +8710,8 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
                 totalSequences: Math.max(0, lastAckSequence + 1),
                 contentLength: fullContent.length,
                 completionReason: "model_stream_done",
+                ...(streamReasoningText ? { reasoning: streamReasoningText } : {}),
+                ...(streamReasoningDurationMs !== null ? { reasoningDurationMs: streamReasoningDurationMs } : {}),
                 webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
                 searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
                 totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
@@ -8753,11 +8850,21 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
             };
           }
 
+          if (streamReasoningDurationMs !== null) {
+            (finalMetadata as Record<string, unknown>).reasoningDurationMs = streamReasoningDurationMs;
+          }
+
           await storage.updateChatMessageContent(
             assistantMessageId,
             assistantPayload.content,
             'done',
             finalMetadata,
+            streamReasoningText || streamReasoningDetails
+              ? {
+                  ...(streamReasoningText ? { reasoning: streamReasoningText } : {}),
+                  ...(streamReasoningDetails ? { reasoningDetails: streamReasoningDetails } : {}),
+                }
+              : undefined,
           );
 
           // Also persist assistant into Conversation State so /api/memory/chats/:id/state reflects reality.

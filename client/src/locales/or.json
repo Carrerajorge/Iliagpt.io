@@ -4,6 +4,11 @@
     "nativeName": "ଓଡ଼ିଆ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ଚିନ୍ତା କରୁଛି…",
+    "thinkingDuration": "{seconds} ସେକେଣ୍ଡ ଚିନ୍ତା କଲା",
+    "thinkingToolArgs": "ଆର୍ଗୁମେଣ୍ଟ ଦେଖନ୍ତୁ",
+    "thinkingTraceLabel": "ସହାୟକର ଯୁକ୍ତି"
+  },
   "literals": {}
 }

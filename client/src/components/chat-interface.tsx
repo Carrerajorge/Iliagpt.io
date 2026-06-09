@@ -414,6 +414,16 @@ async function triggerDocumentAnalysis(
   }
 }
 
+const toOutboundChatMessage = (m: Message) => ({
+  role: m.role,
+  content: m.content,
+  // Re-send signed thinking blocks so Anthropic tool-call chains stay valid;
+  // the backend strips this field for models that do not understand it.
+  ...(m.role === "assistant" && Array.isArray(m.reasoningDetails) && m.reasoningDetails.length > 0
+    ? { reasoning_details: m.reasoningDetails }
+    : {}),
+});
+
 export function ChatInterface({
   messages,
   setMessages,
@@ -477,7 +487,7 @@ export function ChatInterface({
     return getProject(selectedProjectId) || projects.find((p: any) => p.id === selectedProjectId);
   }, [selectedProjectId, projects, getProject]);
 
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const { toast } = useToast();
 
   // First visit explosion
@@ -736,6 +746,11 @@ export function ChatInterface({
   }, [previewArtifactDocument, settings.canvas]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      setUserPlanState(null);
+      return;
+    }
+
     const cacheKey = `_planCache_${user?.id || "anon"}`;
     const cached = (window as any)[cacheKey];
     if (cached && Date.now() - cached.ts < 300_000) {
@@ -759,7 +774,7 @@ export function ChatInterface({
       }
     };
     fetchUserPlanInfo();
-  }, [user?.id]);
+  }, [isAuthenticated, user?.id]);
 
   const agentMode = useAgentMode(chatId || "");
 
@@ -5545,7 +5560,7 @@ export function ChatInterface({
               chatId: effectiveChatIdForStream,
               signal: abortControllerRef.current.signal,
               body: {
-                messages: [...messages.map(m => ({ role: m.role, content: m.content })), { role: "user", content: generationInput }],
+                messages: [...messages.map(toOutboundChatMessage), { role: "user", content: generationInput }],
                 chatId: effectiveChatIdForStream,
                 conversationId: effectiveChatIdForStream,
                 runId: streamRunContext.runId,
@@ -6624,7 +6639,7 @@ export function ChatInterface({
           ], submitConversationId);
 
           try {
-            const fullMessages = messages.map(m => ({ role: m.role, content: m.content }));
+            const fullMessages: Array<Record<string, unknown>> = messages.map(toOutboundChatMessage);
             fullMessages.push({ role: "user", content: cleanPrompt });
             const fallbackChatId: string | null =
               latestChatIdRef.current || chatId || (await waitForActiveChatId());
@@ -8286,6 +8301,7 @@ IMPORTANTE:
                       messages={displayMessages}
                       onUserRetrySend={handleUserRetrySend}
                       variant="default"
+                      conversationId={latestChatIdRef.current || chatId}
                       editingMessageId={editingMessageId}
                       editContent={editContent}
                       setEditContent={setEditContent}
@@ -8598,6 +8614,7 @@ IMPORTANTE:
                         messages={displayMessages}
                         onUserRetrySend={handleUserRetrySend}
                         variant="default"
+                        conversationId={latestChatIdRef.current || chatId}
                         editingMessageId={editingMessageId}
                         editContent={editContent}
                         setEditContent={setEditContent}

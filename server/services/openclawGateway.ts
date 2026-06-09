@@ -1209,7 +1209,31 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
       break;
 
     case "chat.send": {
-      let userMessage = params?.message || params?.content || "";
+      function extractText(val: any): string {
+        if (val == null) return "";
+        if (typeof val === "string") return val;
+        if (Array.isArray(val)) {
+          return val
+            .map((part) => {
+              if (typeof part === "string") return part;
+              if (part && typeof part === "object") {
+                if (typeof part.text === "string") return part.text;
+                if (typeof part.content === "string") return part.content;
+              }
+              return "";
+            })
+            .filter(Boolean)
+            .join("\n");
+        }
+        if (typeof val === "object") {
+          if (typeof val.content === "string") return val.content;
+          if (Array.isArray(val.content)) return extractText(val.content);
+          if (typeof val.text === "string") return val.text;
+          if (typeof val.message === "string") return val.message;
+        }
+        return "";
+      }
+      let userMessage = extractText(params?.message) || extractText(params?.content) || "";
       const chatSessionKey = params?.sessionKey || "main";
       const runId = params?.idempotencyKey || randomUUID();
       const sessionOverride = sessionModelOverrides.get(chatSessionKey);

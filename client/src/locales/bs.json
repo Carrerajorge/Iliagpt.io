@@ -4,6 +4,11 @@
     "nativeName": "Bosanski",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Razmišlja…",
+    "thinkingDuration": "Razmišljao {seconds} s",
+    "thinkingToolArgs": "Prikaži argumente",
+    "thinkingTraceLabel": "Rasuđivanje asistenta"
+  },
   "literals": {}
 }

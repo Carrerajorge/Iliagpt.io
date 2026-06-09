@@ -4,6 +4,11 @@
     "nativeName": "Монгол",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Бодож байна…",
+    "thinkingDuration": "{seconds} сек бодлоо",
+    "thinkingToolArgs": "Аргументуудыг харах",
+    "thinkingTraceLabel": "Туслахын үндэслэл"
+  },
   "literals": {}
 }

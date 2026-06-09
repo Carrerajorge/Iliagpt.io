@@ -4,6 +4,11 @@
     "nativeName": "Deutsch",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Denkt nach…",
+    "thinkingDuration": "Hat {seconds} s nachgedacht",
+    "thinkingToolArgs": "Argumente anzeigen",
+    "thinkingTraceLabel": "Denkprozess des Assistenten"
+  },
   "literals": {}
 }

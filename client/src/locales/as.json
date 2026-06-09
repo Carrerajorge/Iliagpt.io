@@ -4,6 +4,11 @@
     "nativeName": "অসমীয়া",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "চিন্তা কৰি আছে…",
+    "thinkingDuration": "{seconds} ছেকেণ্ড চিন্তা কৰিলে",
+    "thinkingToolArgs": "যুক্তিসমূহ চাওক",
+    "thinkingTraceLabel": "সহায়কৰ যুক্তি"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "Hausa",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Yana tunani…",
+    "thinkingDuration": "Ya yi tunani na dakika {seconds}",
+    "thinkingToolArgs": "Duba hujjoji",
+    "thinkingTraceLabel": "Tunanin mataimaki"
+  },
   "literals": {}
 }

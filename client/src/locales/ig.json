@@ -4,6 +4,11 @@
     "nativeName": "Igbo",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Na-eche…",
+    "thinkingDuration": "Chere sekọnd {seconds}",
+    "thinkingToolArgs": "Lee arụmentị",
+    "thinkingTraceLabel": "Echiche onye enyemaka"
+  },
   "literals": {}
 }

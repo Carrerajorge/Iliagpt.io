@@ -127,6 +127,11 @@ export interface Message {
   ui_components?: string[]; // Components to render: 'executive_summary', 'suggested_questions', 'insights_panel'
   confidence?: 'high' | 'medium' | 'low';
   uncertaintyReason?: string;
+  // Extended thinking (Claude-style reasoning trace)
+  reasoning?: string | null; // Thinking text streamed before the answer
+  reasoningDetails?: unknown[] | null; // Raw OpenRouter reasoning_details (signed thinking blocks)
+  reasoningDurationMs?: number | null; // Total thinking duration ("Pensó durante 12 s")
+  reasoningToolCalls?: { index: number; id?: string; name: string; args: string }[]; // Tool calls interleaved in the trace
   metadata?: Record<string, any>;
   retrievalSteps?: { id: string; label: string; status: "pending" | "active" | "complete" | "error"; detail?: string }[];
   cerebroTimeline?: {
@@ -1262,6 +1267,11 @@ export function useChats() {
           uncertaintyReason: assistantMessage?.uncertaintyReason,
           retrievalSteps: assistantMessage?.retrievalSteps,
           steps: assistantMessage?.steps,
+          // Extended thinking: persisted reasoning renders a collapsed
+          // ThinkingTrace on history load.
+          reasoning: msg.reasoning ?? null,
+          reasoningDetails: msg.reasoningDetails ?? msg.reasoning_details ?? null,
+          reasoningDurationMs: msg.metadata?.reasoningDurationMs ?? null,
         };
       });
 

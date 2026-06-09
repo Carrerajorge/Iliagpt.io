@@ -167,7 +167,7 @@ import { createTerminalControlRouter, terminalClients } from "./routes/terminalC
 import { createWorkflowRouter } from "./routes/workflowRouter";
 import { createDeviceControlRouter } from "./routes/deviceControlRouter";
 import openClawRouter from "./routes/openClawRouter";
-import { createOpenClawRouter } from "./routes/openClawRouter";
+import { createOpenClawRuntimeRouter } from "./routes/openclawRuntimeRouter";
 import { createOpenClawAdminRouter, createOpenClawUserRouter } from "./routes/openclawAdminRouter";
 import { createOpenClawDocumentRouter } from "./routes/openclawDocumentRouter";
 import adsRouter from "./routes/adsRouter";
@@ -1045,11 +1045,15 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
         : "";
       res.redirect(`/openclaw-ui${query}#${buildGatewayHash(req)}`);
     });
-    app.get("/openclaw-ui", (req: Request, res: Response) => {
-      void serveControlUiWithAutoConnect(req, res);
+
+    app.get("/openclaw-boot", (_req: Request, res: Response) => {
+      res.redirect("/openclaw-ui/chat?session=main");
     });
-    app.get("/openclaw-ui/", (req: Request, res: Response) => {
-      void serveControlUiWithAutoConnect(req, res);
+    app.get("/openclaw-ui", (_req: Request, res: Response) => {
+      res.redirect("/openclaw-ui/chat?session=main");
+    });
+    app.get("/openclaw-ui/", (_req: Request, res: Response) => {
+      res.redirect("/openclaw-ui/chat?session=main");
     });
 
     // Patch the Control UI JS bundle at serve-time to:
@@ -2892,7 +2896,7 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
   app.use("/api/workflows", createWorkflowRouter());
 
   app.use("/api/openclaw", openClawRouter);
-  app.use("/api/openclaw/runtime", createOpenClawRouter());
+  app.use("/api/openclaw/runtime", createOpenClawRuntimeRouter());
   app.use("/api/openclaw", createOpenClawUserRouter()); // Per-user conversations + token usage
   app.use("/api/openclaw/documents", createOpenClawDocumentRouter()); // Document upload + analysis + rendering
   app.use("/api/admin/openclaw", createOpenClawAdminRouter()); // Admin: token tracking + conversation management

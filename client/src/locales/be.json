@@ -4,6 +4,11 @@
     "nativeName": "Беларуская",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Думае…",
+    "thinkingDuration": "Думаў {seconds} с",
+    "thinkingToolArgs": "Паказаць аргументы",
+    "thinkingTraceLabel": "Разважанне памочніка"
+  },
   "literals": {}
 }

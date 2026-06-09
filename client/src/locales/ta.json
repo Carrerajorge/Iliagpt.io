@@ -4,6 +4,11 @@
     "nativeName": "தமிழ்",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "சிந்திக்கிறது…",
+    "thinkingDuration": "{seconds} விநாடிகள் சிந்தித்தது",
+    "thinkingToolArgs": "ஆர்குமென்ட்களைக் காண்க",
+    "thinkingTraceLabel": "உதவியாளரின் பகுத்தறிவு"
+  },
   "literals": {}
 }

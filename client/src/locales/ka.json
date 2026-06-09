@@ -4,6 +4,11 @@
     "nativeName": "ქართული",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ფიქრობს…",
+    "thinkingDuration": "იფიქრა {seconds} წმ",
+    "thinkingToolArgs": "არგუმენტების ნახვა",
+    "thinkingTraceLabel": "ასისტენტის მსჯელობა"
+  },
   "literals": {}
 }

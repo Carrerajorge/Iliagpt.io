@@ -4,6 +4,11 @@
     "nativeName": "සිංහල",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "සිතමින්…",
+    "thinkingDuration": "තත්පර {seconds} ක් සිතුවා",
+    "thinkingToolArgs": "තර්ක බලන්න",
+    "thinkingTraceLabel": "සහායකයාගේ තර්කනය"
+  },
   "literals": {}
 }

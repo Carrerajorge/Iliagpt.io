@@ -4,6 +4,11 @@
     "nativeName": "isiXhosa",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Iyacinga…",
+    "thinkingDuration": "Icinge imizuzwana eyi-{seconds}",
+    "thinkingToolArgs": "Jonga iimpikiswano",
+    "thinkingTraceLabel": "Ukuqiqa komncedisi"
+  },
   "literals": {}
 }

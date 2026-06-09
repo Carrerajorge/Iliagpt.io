@@ -92,7 +92,11 @@
     "language.changed": "Language changed to {language}",
     "notifications.count": "{count, plural, =0 {No notifications} one {# notification} other {# notifications}}",
     "inbox.unread": "{count, plural, =0 {No unread messages} one {# unread message} other {# unread messages}}",
-    "greeting.user": "{gender, select, female {Welcome} male {Welcome} other {Welcome}} {name}"
+    "greeting.user": "{gender, select, female {Welcome} male {Welcome} other {Welcome}} {name}",
+    "thinkingHeader": "Thinking…",
+    "thinkingDuration": "Thought for {seconds} s",
+    "thinkingToolArgs": "View arguments",
+    "thinkingTraceLabel": "Assistant reasoning"
   },
   "literals": {
     "General": "General",

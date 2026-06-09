@@ -4,6 +4,11 @@
     "nativeName": "አማርኛ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "በማሰብ ላይ…",
+    "thinkingDuration": "ለ{seconds} ሰከንድ አሰበ",
+    "thinkingToolArgs": "ክርክሮችን አሳይ",
+    "thinkingTraceLabel": "የረዳቱ ምክንያት"
+  },
   "literals": {}
 }

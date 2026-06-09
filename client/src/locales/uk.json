@@ -4,6 +4,11 @@
     "nativeName": "Українська",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Думає…",
+    "thinkingDuration": "Думав {seconds} с",
+    "thinkingToolArgs": "Показати аргументи",
+    "thinkingTraceLabel": "Міркування асистента"
+  },
   "literals": {}
 }

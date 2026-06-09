@@ -4,6 +4,11 @@
     "nativeName": "עברית",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "חושב…",
+    "thinkingDuration": "חשב במשך {seconds} שניות",
+    "thinkingToolArgs": "הצג ארגומנטים",
+    "thinkingTraceLabel": "הנמקת העוזר"
+  },
   "literals": {}
 }

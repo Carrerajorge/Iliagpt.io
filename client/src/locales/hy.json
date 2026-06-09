@@ -4,6 +4,11 @@
     "nativeName": "Հայերեն",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Մտածում է…",
+    "thinkingDuration": "Մտածեց {seconds} վ",
+    "thinkingToolArgs": "Դիտել արգումենտները",
+    "thinkingTraceLabel": "Օգնականի դատողությունը"
+  },
   "literals": {}
 }

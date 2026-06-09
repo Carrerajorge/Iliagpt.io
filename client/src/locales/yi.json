@@ -4,6 +4,11 @@
     "nativeName": "ייִדיש",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "טראַכט…",
+    "thinkingDuration": "געטראַכט {seconds} סעקונדעס",
+    "thinkingToolArgs": "ווײַזן אַרגומענטן",
+    "thinkingTraceLabel": "דער אַסיסטענטס טראַכטן"
+  },
   "literals": {}
 }

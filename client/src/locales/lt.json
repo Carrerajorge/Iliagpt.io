@@ -4,6 +4,11 @@
     "nativeName": "Lietuvių",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Mąsto…",
+    "thinkingDuration": "Mąstė {seconds} s",
+    "thinkingToolArgs": "Rodyti argumentus",
+    "thinkingTraceLabel": "Asistento samprotavimas"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "Ελληνικά",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Σκέφτεται…",
+    "thinkingDuration": "Σκέφτηκε για {seconds} δ",
+    "thinkingToolArgs": "Προβολή ορισμάτων",
+    "thinkingTraceLabel": "Συλλογισμός του βοηθού"
+  },
   "literals": {}
 }

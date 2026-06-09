@@ -4,6 +4,11 @@
     "nativeName": "Basa Sunda",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Keur mikir…",
+    "thinkingDuration": "Mikir salila {seconds} detik",
+    "thinkingToolArgs": "Tingali argumen",
+    "thinkingTraceLabel": "Penalaran asisten"
+  },
   "literals": {}
 }

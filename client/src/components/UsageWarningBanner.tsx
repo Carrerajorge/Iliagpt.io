@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/apiClient";
+import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { X, AlertTriangle, Zap } from "lucide-react";
@@ -24,10 +25,12 @@ function isDismissed(): boolean {
 
 export default function UsageWarningBanner() {
   const [dismissed, setDismissed] = useState(isDismissed);
+  const { isAuthenticated } = useAuth();
 
   const { data } = useQuery<QuotaStatus>({
-    queryKey: ["quota-status"],
-    queryFn: () => apiFetch("/api/user/quota-status").then((r) => r.json()),
+    queryKey: ["user-usage-banner"],
+    queryFn: () => apiFetch("/api/user/usage").then((r) => r.json()),
+    enabled: isAuthenticated,
     refetchInterval: 60_000,
     retry: false,
   });

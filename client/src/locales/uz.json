@@ -4,6 +4,11 @@
     "nativeName": "Oʻzbek",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "O'ylanmoqda…",
+    "thinkingDuration": "{seconds} soniya o'yladi",
+    "thinkingToolArgs": "Argumentlarni ko'rish",
+    "thinkingTraceLabel": "Yordamchining mulohazasi"
+  },
   "literals": {}
 }

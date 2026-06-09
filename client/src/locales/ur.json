@@ -4,6 +4,11 @@
     "nativeName": "اردو",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "سوچ رہا ہے…",
+    "thinkingDuration": "{seconds} سیکنڈ سوچا",
+    "thinkingToolArgs": "آرگومنٹس دیکھیں",
+    "thinkingTraceLabel": "اسسٹنٹ کا استدلال"
+  },
   "literals": {}
 }

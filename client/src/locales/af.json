@@ -4,6 +4,11 @@
     "nativeName": "Afrikaans",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Dink…",
+    "thinkingDuration": "Het {seconds} s lank gedink",
+    "thinkingToolArgs": "Bekyk argumente",
+    "thinkingTraceLabel": "Assistent se redenasie"
+  },
   "literals": {}
 }

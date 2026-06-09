@@ -4,6 +4,11 @@
     "nativeName": "Türkçe",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Düşünüyor…",
+    "thinkingDuration": "{seconds} sn düşündü",
+    "thinkingToolArgs": "Argümanları görüntüle",
+    "thinkingTraceLabel": "Asistanın akıl yürütmesi"
+  },
   "literals": {}
 }

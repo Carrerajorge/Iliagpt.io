@@ -4,6 +4,11 @@
     "nativeName": "Lëtzebuergesch",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Denkt no…",
+    "thinkingDuration": "Huet {seconds} s nogeduecht",
+    "thinkingToolArgs": "Argumenter ukucken",
+    "thinkingTraceLabel": "Iwwerleeung vum Assistent"
+  },
   "literals": {}
 }

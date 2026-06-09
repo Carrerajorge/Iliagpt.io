@@ -2487,7 +2487,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { data: currentApiKey } = useQuery({
     queryKey: ['/api/admin/settings/OPENROUTER_API_KEY'],
     queryFn: async () => {
-      const res = await apiFetch('/api/admin/settings/OPENROUTER_API_KEY', { credentials: 'include' });
+      const res = await apiFetch('/api/admin/settings/key/OPENROUTER_API_KEY', { credentials: 'include' });
       if (!res.ok) return { value: "" };
       return res.json();
     }

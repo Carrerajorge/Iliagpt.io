@@ -4,6 +4,11 @@
     "nativeName": "Русский",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Думает…",
+    "thinkingDuration": "Думал {seconds} с",
+    "thinkingToolArgs": "Показать аргументы",
+    "thinkingTraceLabel": "Рассуждение ассистента"
+  },
   "literals": {}
 }

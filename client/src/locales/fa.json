@@ -4,6 +4,11 @@
     "nativeName": "فارسی",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "در حال فکر کردن…",
+    "thinkingDuration": "{seconds} ثانیه فکر کرد",
+    "thinkingToolArgs": "نمایش آرگومان‌ها",
+    "thinkingTraceLabel": "استدلال دستیار"
+  },
   "literals": {}
 }

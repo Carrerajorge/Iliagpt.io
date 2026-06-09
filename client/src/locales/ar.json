@@ -4,6 +4,11 @@
     "nativeName": "العربية",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "جارٍ التفكير…",
+    "thinkingDuration": "فكّر لمدة {seconds} ث",
+    "thinkingToolArgs": "عرض الوسائط",
+    "thinkingTraceLabel": "استدلال المساعد"
+  },
   "literals": {}
 }

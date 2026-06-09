@@ -4,6 +4,11 @@
     "nativeName": "Kreyòl Ayisyen",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "L ap reflechi…",
+    "thinkingDuration": "Li reflechi pandan {seconds} s",
+    "thinkingToolArgs": "Gade agiman yo",
+    "thinkingTraceLabel": "Rezònman asistan an"
+  },
   "literals": {}
 }

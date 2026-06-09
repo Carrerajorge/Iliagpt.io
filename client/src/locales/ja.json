@@ -4,6 +4,11 @@
     "nativeName": "日本語",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "考えています…",
+    "thinkingDuration": "{seconds} 秒間考えました",
+    "thinkingToolArgs": "引数を表示",
+    "thinkingTraceLabel": "アシスタントの推論"
+  },
   "literals": {}
 }

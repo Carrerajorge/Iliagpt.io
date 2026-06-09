@@ -4,6 +4,11 @@
     "nativeName": "Basa Jawa",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Mikir…",
+    "thinkingDuration": "Mikir suwene {seconds} detik",
+    "thinkingToolArgs": "Deleng argumen",
+    "thinkingTraceLabel": "Penalaran asisten"
+  },
   "literals": {}
 }

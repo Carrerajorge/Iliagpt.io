@@ -4,6 +4,11 @@
     "nativeName": "Latviešu",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Domā…",
+    "thinkingDuration": "Domāja {seconds} s",
+    "thinkingToolArgs": "Skatīt argumentus",
+    "thinkingTraceLabel": "Asistenta spriedums"
+  },
   "literals": {}
 }

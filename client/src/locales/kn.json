@@ -4,6 +4,11 @@
     "nativeName": "ಕನ್ನಡ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ಯೋಚಿಸುತ್ತಿದೆ…",
+    "thinkingDuration": "{seconds} ಸೆಕೆಂಡು ಯೋಚಿಸಿದೆ",
+    "thinkingToolArgs": "ಆರ್ಗ್ಯುಮೆಂಟ್‌ಗಳನ್ನು ನೋಡಿ",
+    "thinkingTraceLabel": "ಸಹಾಯಕನ ತಾರ್ಕಿಕತೆ"
+  },
   "literals": {}
 }

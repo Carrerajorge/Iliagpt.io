@@ -4,6 +4,11 @@
     "nativeName": "Türkmen",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Pikirlenýär…",
+    "thinkingDuration": "{seconds} sekunt pikirlendi",
+    "thinkingToolArgs": "Argumentleri gör",
+    "thinkingTraceLabel": "Kömekçiniň pikiri"
+  },
   "literals": {}
 }

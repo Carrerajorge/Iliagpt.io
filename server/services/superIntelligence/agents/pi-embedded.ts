@@ -5,16 +5,16 @@ import {
   type EmbeddedPiCompactResult,
   type EmbeddedPiRunMeta,
   type EmbeddedPiRunResult,
-} from "./pi-embedded-runner.js";
+} from "../../../openclaw-src/agents/pi-embedded-runner.js";
 import {
   abortEmbeddedPiRun,
   isEmbeddedPiRunActive,
   isEmbeddedPiRunStreaming,
   queueEmbeddedPiMessage,
   waitForEmbeddedPiRunEnd,
-} from "../../../openclaw/src/agents/pi-embedded-runner/runs.js";
+} from "../../../openclaw-src/agents/pi-embedded-runner/runs.js";
 
-type OpenClawEmbeddedRun = typeof import("../../../openclaw/src/agents/pi-embedded-runner/run.js").runEmbeddedPiAgent;
+type OpenClawEmbeddedRun = typeof import("../../../openclaw-src/agents/pi-embedded-runner/run.js").runEmbeddedPiAgent;
 
 let openClawEmbeddedRunLoader: OpenClawEmbeddedRun | null = null;
 
@@ -38,7 +38,7 @@ export async function runEmbeddedPiAgent(
   ...args: Parameters<OpenClawEmbeddedRun>
 ): ReturnType<OpenClawEmbeddedRun> {
   if (!openClawEmbeddedRunLoader) {
-    const mod = await import("../../../openclaw/src/agents/pi-embedded-runner/run.js");
+    const mod = await import("../../../openclaw-src/agents/pi-embedded-runner/run.js");
     openClawEmbeddedRunLoader = mod.runEmbeddedPiAgent;
   }
 

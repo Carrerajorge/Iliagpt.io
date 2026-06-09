@@ -4,6 +4,11 @@
     "nativeName": "Māori",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Kei te whakaaro…",
+    "thinkingDuration": "I whakaaro mō te {seconds} hēkona",
+    "thinkingToolArgs": "Tirohia ngā tohenga",
+    "thinkingTraceLabel": "Te whakaaroaro a te kaiāwhina"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "Gaeilge",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Ag smaoineamh…",
+    "thinkingDuration": "Smaoinigh ar feadh {seconds} s",
+    "thinkingToolArgs": "Féach ar na hargóintí",
+    "thinkingTraceLabel": "Réasúnaíocht an chúntóra"
+  },
   "literals": {}
 }

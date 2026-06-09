@@ -4,6 +4,11 @@
     "nativeName": "中文",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "思考中…",
+    "thinkingDuration": "思考了 {seconds} 秒",
+    "thinkingToolArgs": "查看参数",
+    "thinkingTraceLabel": "助手的推理"
+  },
   "literals": {}
 }

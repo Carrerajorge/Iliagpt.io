@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import vm from "node:vm";
 
-import { buildOpenClawPreSeedScript } from "../openclawControlUi";
+import { buildOpenClawAutoConnectScript, buildOpenClawPreSeedScript } from "../openclawControlUi";
 
 function createLocalStorage(seed: Record<string, string> = {}) {
   const data = new Map(Object.entries(seed));
@@ -41,6 +41,8 @@ describe("buildOpenClawPreSeedScript", () => {
   it("seeds the control-ui gateway settings with a normalized /openclaw-ws key", () => {
     const script = buildOpenClawPreSeedScript({ safeToken: "token-123" });
     expect(script).toContain('replace(/\\/+$/,"")');
+    expect(script).toContain("shadowRoot");
+    expect(script).toContain("&session=main");
 
     const { storage, data } = createLocalStorage();
     const location = {
@@ -71,5 +73,14 @@ describe("buildOpenClawPreSeedScript", () => {
     expect(parsed.gatewayUrl).toBe("ws://127.0.0.1:41731/openclaw-ws");
     expect(parsed.autoConnect).toBe(true);
     expect(parsed.sessionKey).toBe("main");
+  });
+});
+
+describe("buildOpenClawAutoConnectScript", () => {
+  it("searches connect controls through shadow roots", () => {
+    const script = buildOpenClawAutoConnectScript();
+    expect(script).toContain("shadowRoot");
+    expect(script).toContain("login-gate__connect");
+    expect(script).toContain("conectar");
   });
 });

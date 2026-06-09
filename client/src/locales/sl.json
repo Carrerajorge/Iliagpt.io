@@ -4,6 +4,11 @@
     "nativeName": "Slovenščina",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Razmišlja…",
+    "thinkingDuration": "Razmišljal {seconds} s",
+    "thinkingToolArgs": "Prikaži argumente",
+    "thinkingTraceLabel": "Sklepanje pomočnika"
+  },
   "literals": {}
 }

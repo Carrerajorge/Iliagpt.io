@@ -4,6 +4,11 @@
     "nativeName": "ລາວ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ກຳລັງຄິດ…",
+    "thinkingDuration": "ຄິດເປັນເວລາ {seconds} ວິນາທີ",
+    "thinkingToolArgs": "ເບິ່ງອາກິວເມັນ",
+    "thinkingTraceLabel": "ການໃຫ້ເຫດຜົນຂອງຜູ້ຊ່ວຍ"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "Latina",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Cogitat…",
+    "thinkingDuration": "Cogitavit per {seconds} s",
+    "thinkingToolArgs": "Argumenta videre",
+    "thinkingTraceLabel": "Ratiocinatio adiutoris"
+  },
   "literals": {}
 }

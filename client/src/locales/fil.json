@@ -4,6 +4,11 @@
     "nativeName": "Filipino",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Nag-iisip…",
+    "thinkingDuration": "Nag-isip nang {seconds} s",
+    "thinkingToolArgs": "Tingnan ang mga argumento",
+    "thinkingTraceLabel": "Pangangatwiran ng assistant"
+  },
   "literals": {}
 }

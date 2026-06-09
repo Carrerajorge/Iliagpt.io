@@ -4,6 +4,11 @@
     "nativeName": "Shqip",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Po mendon…",
+    "thinkingDuration": "Mendoi për {seconds} s",
+    "thinkingToolArgs": "Shiko argumentet",
+    "thinkingTraceLabel": "Arsyetimi i asistentit"
+  },
   "literals": {}
 }

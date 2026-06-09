@@ -4,6 +4,11 @@
     "nativeName": "Malti",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Qed jaħseb…",
+    "thinkingDuration": "Ħaseb għal {seconds} sek",
+    "thinkingToolArgs": "Ara l-argumenti",
+    "thinkingTraceLabel": "Raġunament tal-assistent"
+  },
   "literals": {}
 }

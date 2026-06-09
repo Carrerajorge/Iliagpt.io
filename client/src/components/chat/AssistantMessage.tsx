@@ -24,6 +24,7 @@ import {
 import { AgentArtifact } from "@/components/agent-steps-display";
 import { useSuperAgentRun } from "@/stores/super-agent-store";
 import { MarkdownRenderer, MarkdownErrorBoundary } from "@/components/markdown-renderer";
+import { MessageThinkingTrace } from "./ThinkingTrace";
 import { UncertaintyBadge } from "@/components/ui/uncertainty-badge";
 import { VerificationBadge } from "@/components/ui/verification-badge";
 import { SuperAgentDisplay } from "@/components/super-agent-display";
@@ -256,6 +257,10 @@ export const AssistantMessage = memo(function AssistantMessage({
 
     return (
         <div className="flex flex-col gap-0.5 w-full min-w-0">
+            {/* Extended thinking — collapsed reasoning trace above the answer */}
+            {message.reasoning && !message.isThinking && (
+                <MessageThinkingTrace message={message} />
+            )}
             {/* Uncertainty Badge */}
             {message.confidence && message.confidence !== 'high' && (
                 <div className="flex justify-start mb-1">

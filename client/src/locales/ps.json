@@ -4,6 +4,11 @@
     "nativeName": "پښتو",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "فکر کوي…",
+    "thinkingDuration": "{seconds} ثانیې فکر وکړ",
+    "thinkingToolArgs": "دلیلونه وګورئ",
+    "thinkingTraceLabel": "د مرستیال استدلال"
+  },
   "literals": {}
 }

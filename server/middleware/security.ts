@@ -34,7 +34,7 @@ export const securityHeaders = (req: Request, res: Response, next: NextFunction)
   res.setHeader("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ws: wss: https:; font-src 'self' data:; frame-ancestors 'self'",
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://accounts.google.com; img-src 'self' data: blob: https:; connect-src 'self' ws: wss: https:; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; frame-ancestors 'self'",
   );
   next();
 };

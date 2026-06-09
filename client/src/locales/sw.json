@@ -4,6 +4,11 @@
     "nativeName": "Kiswahili",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Inafikiria…",
+    "thinkingDuration": "Ilifikiria kwa sekunde {seconds}",
+    "thinkingToolArgs": "Tazama hoja",
+    "thinkingTraceLabel": "Hoja za msaidizi"
+  },
   "literals": {}
 }

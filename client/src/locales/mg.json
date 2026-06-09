@@ -4,6 +4,11 @@
     "nativeName": "Malagasy",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Mieritreritra…",
+    "thinkingDuration": "Nieritreritra nandritra ny {seconds} seg",
+    "thinkingToolArgs": "Hijery ny tohan-kevitra",
+    "thinkingTraceLabel": "Fisainan'ny mpanampy"
+  },
   "literals": {}
 }

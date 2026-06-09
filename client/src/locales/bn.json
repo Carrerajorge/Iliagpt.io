@@ -4,6 +4,11 @@
     "nativeName": "বাংলা",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ভাবছে…",
+    "thinkingDuration": "{seconds} সেকেন্ড ভেবেছে",
+    "thinkingToolArgs": "আর্গুমেন্ট দেখুন",
+    "thinkingTraceLabel": "সহকারীর যুক্তি"
+  },
   "literals": {}
 }

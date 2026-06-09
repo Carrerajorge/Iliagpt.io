@@ -137,7 +137,7 @@ export interface IStorage {
   createChatMessage(message: InsertChatMessage): Promise<ChatMessage>;
   getChatMessage(chatId: string, messageId: string): Promise<ChatMessage | undefined>;
   getChatMessages(chatId: string, options?: { limit?: number; offset?: number; before?: Date; orderBy?: 'asc' | 'desc' }): Promise<ChatMessage[]>;
-  updateChatMessageContent(id: string, content: string, status: string, metadata?: Record<string, any>): Promise<ChatMessage | undefined>;
+  updateChatMessageContent(id: string, content: string, status: string, metadata?: Record<string, any>, extras?: { reasoning?: string | null; reasoningDetails?: unknown }): Promise<ChatMessage | undefined>;
   createChatWithMessages(chat: InsertChat, messages: Partial<InsertChatMessage>[]): Promise<{ chat: Chat; messages: ChatMessage[] }>;
   searchMessages(userId: string, query: string): Promise<ChatMessage[]>;
   // Chat Run operations (for idempotent message processing)
@@ -776,10 +776,22 @@ export class MemStorage implements IStorage {
 
 
 
-  async updateChatMessageContent(id: string, content: string, status: string, metadata?: Record<string, any>): Promise<ChatMessage | undefined> {
+  async updateChatMessageContent(
+    id: string,
+    content: string,
+    status: string,
+    metadata?: Record<string, any>,
+    extras?: { reasoning?: string | null; reasoningDetails?: unknown },
+  ): Promise<ChatMessage | undefined> {
     const updateData: any = { content, status };
     if (metadata) {
       updateData.metadata = metadata;
+    }
+    if (extras && extras.reasoning !== undefined) {
+      updateData.reasoning = extras.reasoning;
+    }
+    if (extras && extras.reasoningDetails !== undefined) {
+      updateData.reasoningDetails = extras.reasoningDetails;
     }
     const [result] = await db.update(chatMessages)
       .set(updateData)

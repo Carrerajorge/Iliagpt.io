@@ -21,12 +21,12 @@ interface MiniSidebarProps {
 
 export function MiniSidebar({ className, onNewChat, onExpand, onOpenLibrary, onOpenGpts, onOpenSkills, onOpenApps, onOpenWhatsAppConnect }: MiniSidebarProps) {
   const { user } = useAuth();
-  const [, setLocation] = useLocation();
   const isAdmin = isAdminUser(user as any);
   const displayName = isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario");
   const avatarInitial = isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase();
   const avatarUrl = (user as any)?.profileImageUrl || (user as any)?.avatarUrl || null;
   const btnClass = "h-10 w-10 rounded-xl hover:bg-accent transition-all duration-200";
+  const [, setLocation] = useLocation();
 
   return (
     <TooltipProvider delayDuration={100}>
@@ -84,7 +84,7 @@ export function MiniSidebar({ className, onNewChat, onExpand, onOpenLibrary, onO
 
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className={btnClass} onClick={() => setLocation("/openclaw")} data-testid="mini-button-openclaw">
+              <Button variant="ghost" size="icon" className={btnClass} onClick={() => { setLocation("/openclaw"); }} data-testid="mini-button-openclaw">
                 <span aria-hidden="true" className="text-[18px] leading-none">🦞</span>
               </Button>
             </TooltipTrigger>

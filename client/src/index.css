@@ -9,6 +9,7 @@
 @import "./styles/premium-effects.css";
 @import "./styles/marketing-minimal.css";
 @import "./styles/accessibility.css";
+@import "./styles/gpt-category-effects.css";
 
 @custom-variant dark (&:is(.dark *));
 

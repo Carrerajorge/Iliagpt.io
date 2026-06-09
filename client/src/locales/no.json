@@ -4,6 +4,11 @@
     "nativeName": "Norsk",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Tenker…",
+    "thinkingDuration": "Tenkte i {seconds} sek.",
+    "thinkingToolArgs": "Vis argumenter",
+    "thinkingTraceLabel": "Assistentens resonnement"
+  },
   "literals": {}
 }

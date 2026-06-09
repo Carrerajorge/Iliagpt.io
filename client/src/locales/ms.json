@@ -4,6 +4,11 @@
     "nativeName": "Bahasa Melayu",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Sedang berfikir…",
+    "thinkingDuration": "Berfikir selama {seconds} s",
+    "thinkingToolArgs": "Lihat argumen",
+    "thinkingTraceLabel": "Penaakulan pembantu"
+  },
   "literals": {}
 }

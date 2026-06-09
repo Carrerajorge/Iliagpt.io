@@ -4,6 +4,11 @@
     "nativeName": "Frysk",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Tinkt nei…",
+    "thinkingDuration": "Hat {seconds} s neitocht",
+    "thinkingToolArgs": "Arguminten besjen",
+    "thinkingTraceLabel": "Redenearring fan de assistint"
+  },
   "literals": {}
 }

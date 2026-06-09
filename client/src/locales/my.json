@@ -4,6 +4,11 @@
     "nativeName": "မြန်မာ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "စဉ်းစားနေသည်…",
+    "thinkingDuration": "{seconds} စက္ကန့် စဉ်းစားခဲ့သည်",
+    "thinkingToolArgs": "အာဂျူးမင့်များကြည့်ရန်",
+    "thinkingTraceLabel": "အကူ၏ ဆင်ခြင်တုံတရား"
+  },
   "literals": {}
 }

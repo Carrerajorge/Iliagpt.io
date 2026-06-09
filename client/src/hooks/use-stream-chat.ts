@@ -14,6 +14,7 @@ import type { Message } from "@/hooks/use-chats";
 import { type AIState, type AiProcessStep } from "@/components/chat-interface/types";
 import { buildAssistantMessage } from "@shared/assistantMessage";
 import { upsertMessageByIdentity } from "@/lib/chatMessageIdentity";
+import { useThinkingTraceStore } from "@/stores/thinkingTraceStore";
 
 export interface StreamChatDeps {
   setOptimisticMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -562,6 +563,9 @@ export function useStreamChat(deps: StreamChatDeps) {
       const session = getSession(targetConversationId);
       if (session.finalizing) return;
       session.finalizing = true;
+      // Freeze the live thinking trace (no-op when already done); the trace is
+      // cleared when the next request for this conversation starts.
+      useThinkingTraceStore.getState().finishTrace(targetConversationId);
       const serverAssistantMessageId = getServerAssistantMessageId(session);
       const shouldReuseServerAssistantMessage =
         message.role === "assistant" && !!serverAssistantMessageId;
@@ -916,6 +920,8 @@ export function useStreamChat(deps: StreamChatDeps) {
             session.pendingContent = null;
             session.finalizing = false;
             session.hydratingProgress = null;
+            // Fresh request → fresh thinking trace (also clears retries' stale traces).
+            useThinkingTraceStore.getState().clearTrace(conversationId);
             if (session.idleRecoveryTimeoutId) {
               clearTimeout(session.idleRecoveryTimeoutId);
               session.idleRecoveryTimeoutId = null;
@@ -1215,6 +1221,42 @@ export function useStreamChat(deps: StreamChatDeps) {
 
                   onEvent?.(currentEventType, data);
 
+                  // ── Extended thinking (Claude-style reasoning trace) ──────
+                  // Routed into the per-conversation thinkingTraceStore. The
+                  // store guards by requestId, and `isStaleConversation` keeps
+                  // replaced/background streams from touching the live trace.
+                  if (!isStaleConversation && currentEventType === "reasoning_delta") {
+                    const reasoningDelta = typeof data.content === "string" ? data.content : "";
+                    if (reasoningDelta) {
+                      useThinkingTraceStore
+                        .getState()
+                        .appendReasoning(conversationId, streamRequestId, reasoningDelta);
+                      const reasoningAiState = session.queueDepth > 0 ? "queued" : "thinking";
+                      setAiState(reasoningAiState, conversationId);
+                      onAiStateChange?.(reasoningAiState);
+                    }
+                  }
+
+                  if (!isStaleConversation && currentEventType === "tool_call_delta") {
+                    useThinkingTraceStore.getState().appendToolCall(conversationId, streamRequestId, {
+                      index: Number(data.index) || 0,
+                      id: typeof data.id === "string" ? data.id : undefined,
+                      name: typeof data.name === "string" ? data.name : undefined,
+                      argsDelta: typeof data.argsDelta === "string" ? data.argsDelta : undefined,
+                    });
+                  }
+
+                  if (!isStaleConversation && currentEventType === "reasoning_done") {
+                    const durationMs = Number(data.durationMs);
+                    useThinkingTraceStore
+                      .getState()
+                      .completeReasoning(
+                        conversationId,
+                        streamRequestId,
+                        Number.isFinite(durationMs) ? durationMs : 0,
+                      );
+                  }
+
                   if (currentEventType === "chunk" || currentEventType === "text") {
                     const content = typeof data.content === "string" ? data.content : "";
                     if (content) {
@@ -1452,6 +1494,27 @@ export function useStreamChat(deps: StreamChatDeps) {
                       }
                     }
 
+                    // Carry the thinking trace onto the final message so the
+                    // collapsed ThinkingTrace renders immediately after the
+                    // stream ends (history loads get it from the DB columns).
+                    {
+                      const liveTrace = useThinkingTraceStore.getState().traces[conversationId];
+                      const finalReasoning =
+                        (typeof data.reasoning === "string" && data.reasoning) ||
+                        liveTrace?.reasoning ||
+                        "";
+                      if (finalReasoning) {
+                        (msg as any).reasoning = finalReasoning;
+                        const doneDuration = Number(data.reasoningDurationMs);
+                        (msg as any).reasoningDurationMs = Number.isFinite(doneDuration)
+                          ? doneDuration
+                          : liveTrace?.durationMs ?? undefined;
+                        if (liveTrace?.toolCalls?.length) {
+                          (msg as any).reasoningToolCalls = liveTrace.toolCalls;
+                        }
+                      }
+                    }
+
                     finalize(msg, conversationId, "done");
                     return { ok: true, content: terminalContent, message: msg, response };
                   }
@@ -1521,6 +1584,17 @@ export function useStreamChat(deps: StreamChatDeps) {
                   retrievalSteps: lastEventData?.retrievalSteps,
                   steps: lastEventData?.steps,
                 })) as Message;
+
+                {
+                  const liveTrace = useThinkingTraceStore.getState().traces[conversationId];
+                  if (liveTrace?.reasoning) {
+                    (msg as any).reasoning = liveTrace.reasoning;
+                    (msg as any).reasoningDurationMs = liveTrace.durationMs ?? undefined;
+                    if (liveTrace.toolCalls.length) {
+                      (msg as any).reasoningToolCalls = liveTrace.toolCalls;
+                    }
+                  }
+                }
 
                 finalize(msg, conversationId, "done");
                 return { ok: true, content: terminalContent, message: msg, response };

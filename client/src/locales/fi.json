@@ -4,6 +4,11 @@
     "nativeName": "Suomi",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Ajattelee…",
+    "thinkingDuration": "Ajatteli {seconds} s",
+    "thinkingToolArgs": "Näytä argumentit",
+    "thinkingTraceLabel": "Avustajan päättely"
+  },
   "literals": {}
 }

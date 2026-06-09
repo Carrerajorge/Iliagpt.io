@@ -47,6 +47,11 @@ function applyChatAttachmentRefinements<T extends z.ZodTypeAny>(schema: T): T {
 export const chatMessageSchema = z.object({
     role: z.enum(['user', 'assistant', 'system']),
     content: z.string().min(1, 'Message content cannot be empty').max(500_000, 'Message too long'),
+    // Extended thinking: raw OpenRouter reasoning_details from a previous
+    // assistant turn. Re-sent verbatim so Anthropic models with tool calls
+    // keep their signed thinking chain intact (stripped for other models in
+    // the gateway's per-model normalization).
+    reasoning_details: z.array(z.unknown()).max(200).optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;

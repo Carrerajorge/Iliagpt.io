@@ -4,6 +4,11 @@
     "nativeName": "Nederlands",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Denkt na…",
+    "thinkingDuration": "Heeft {seconds} s nagedacht",
+    "thinkingToolArgs": "Argumenten bekijken",
+    "thinkingTraceLabel": "Redenering van de assistent"
+  },
   "literals": {}
 }

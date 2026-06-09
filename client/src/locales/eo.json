@@ -4,6 +4,11 @@
     "nativeName": "Esperanto",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Pensante…",
+    "thinkingDuration": "Pensis dum {seconds} s",
+    "thinkingToolArgs": "Montri argumentojn",
+    "thinkingTraceLabel": "Rezonado de la asistanto"
+  },
   "literals": {}
 }

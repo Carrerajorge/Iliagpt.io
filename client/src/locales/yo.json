@@ -4,6 +4,11 @@
     "nativeName": "Yorùbá",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Ń ronú…",
+    "thinkingDuration": "Ó ronú fún ìṣẹ́jú-aaya {seconds}",
+    "thinkingToolArgs": "Wo àwọn àríyànjiyàn",
+    "thinkingTraceLabel": "Èrò olùrànlọ́wọ́"
+  },
   "literals": {}
 }

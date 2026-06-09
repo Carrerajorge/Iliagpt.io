@@ -18,6 +18,8 @@ import {
 } from "@/lib/chatMessageIdentity";
 import { AgentArtifact } from "@/components/agent-steps-display";
 import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
+import { LiveThinkingTrace } from "./ThinkingTrace";
+import { useThinkingTraceStore, selectThinkingTrace } from "@/stores/thinkingTraceStore";
 
 // Fallback ID for the synthetic streaming message. When a pre-generated
 // messageId is provided via `streamingMsgId` prop, we use that instead
@@ -84,6 +86,8 @@ export interface ChatMessageListProps {
     onToolConfirm?: (messageId: string, toolName: string, stepIndex: number) => void;
     onToolDeny?: (messageId: string, toolName: string, stepIndex: number) => void;
     scrollParent?: HTMLElement | null;
+    /** Active conversation id — keys the live extended-thinking trace. */
+    conversationId?: string | null;
 }
 
 export function ChatMessageList({
@@ -132,9 +136,12 @@ export function ChatMessageList({
     onUserRetrySend,
     onToolConfirm,
     onToolDeny,
-    scrollParent
+    scrollParent,
+    conversationId
 }: ChatMessageListProps) {
     const virtuosoRef = useRef<VirtuosoHandle>(null);
+    // Live extended-thinking trace for this conversation (null when none).
+    const liveThinkingTrace = useThinkingTraceStore(selectThinkingTrace(conversationId));
 
     // Effective streaming message ID: use pre-generated ID if available (for zero-flicker),
     // otherwise fall back to the fixed "__streaming__" constant.
@@ -271,7 +278,25 @@ export function ChatMessageList({
                     </motion.div>
                 )}
 
-                {isAiBusyState(aiState) && !streamingContent && variant === "default" && (
+                {/* Live extended-thinking trace while the model reasons before
+                    the first visible token (the streaming bubble takes over
+                    once text starts). */}
+                {isAiBusyState(aiState) && !streamingContent && variant === "default" &&
+                    !!liveThinkingTrace && (liveThinkingTrace.reasoning || liveThinkingTrace.toolCalls.length > 0) && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        data-testid="thinking-trace-virt"
+                        className="flex w-full max-w-3xl mx-auto justify-start px-4 pb-2"
+                    >
+                        <div className="w-full max-w-[85%]">
+                            <LiveThinkingTrace conversationId={conversationId} />
+                        </div>
+                    </motion.div>
+                )}
+
+                {isAiBusyState(aiState) && !streamingContent && variant === "default" &&
+                    !(liveThinkingTrace && (liveThinkingTrace.reasoning || liveThinkingTrace.toolCalls.length > 0)) && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
@@ -303,7 +328,7 @@ export function ChatMessageList({
                 )}
             </>
         );
-    }, [showSuggestedReplies, suggestions, onSelectSuggestedReply, uiPhase, activeRunId, onRunComplete, aiState, streamingContent, variant, realTimePhase, detectedIntent, aiProcessSteps]);
+    }, [showSuggestedReplies, suggestions, onSelectSuggestedReply, uiPhase, activeRunId, onRunComplete, aiState, streamingContent, variant, realTimePhase, detectedIntent, aiProcessSteps, liveThinkingTrace, conversationId]);
 
     // Stable key function.
     // For optimistic messages, `id` is replaced after server ACK; use `clientTempId`
@@ -319,7 +344,9 @@ export function ChatMessageList({
             return (
                 <div className="pb-2 px-2">
                     <div className="flex w-full max-w-3xl mx-auto gap-2 justify-start">
-                        <div className="flex flex-col gap-1.5 max-w-[85%] items-start min-w-0">
+                        <div className="flex flex-col gap-1.5 max-w-[85%] items-start min-w-0 w-full">
+                            {/* Extended thinking — renders above the streaming answer */}
+                            <LiveThinkingTrace conversationId={conversationId} />
                             <div className="text-sm prose prose-sm dark:prose-invert max-w-none leading-relaxed min-w-0 animate-in fade-in duration-150">
                                 <MarkdownErrorBoundary key={`stream-inline-${msg.content.length}`} fallbackContent={msg.content}>
                                     <MarkdownRenderer
@@ -393,7 +420,7 @@ export function ChatMessageList({
         minimizedDocument, onRestoreDocument, setEditContent,
         onAgentCancel, onAgentRetry, onAgentArtifactPreview,
         onSuperAgentCancel, onSuperAgentRetry, onQuestionClick,
-        effectiveStreamingId, streamingContent, onUserRetrySend
+        effectiveStreamingId, streamingContent, onUserRetrySend, conversationId
     ]);
 
     return (

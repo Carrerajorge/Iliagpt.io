@@ -696,3 +696,24 @@
     transition: none !important;
   }
 }
+/* ── Extended thinking (ThinkingTrace) ───────────────────────────── */
+/* Shimmering "Pensando…" header text — reuses the shimmer keyframes. */
+.thinking-shimmer-text {
+  background: linear-gradient(90deg,
+      hsl(var(--muted-foreground)) 0%,
+      hsl(var(--foreground)) 50%,
+      hsl(var(--muted-foreground)) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-shimmer-text {
+    animation: none;
+    color: hsl(var(--muted-foreground));
+    background: none;
+  }
+}

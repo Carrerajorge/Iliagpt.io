@@ -4,6 +4,11 @@
     "nativeName": "Svenska",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Tänker…",
+    "thinkingDuration": "Tänkte i {seconds} sek",
+    "thinkingToolArgs": "Visa argument",
+    "thinkingTraceLabel": "Assistentens resonemang"
+  },
   "literals": {}
 }

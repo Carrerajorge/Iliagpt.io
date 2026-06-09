@@ -146,4 +146,37 @@ describe("preExecutionIntentGuard", () => {
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalled();
   });
+
+  test("skips read-only OpenClaw native exec when tools are disabled", async () => {
+    const req = makeReq({
+      path: "/api/openclaw/runtime/native/exec",
+      originalUrl: "/api/openclaw/runtime/native/exec",
+      body: { prompt: "hola", enableTools: false },
+    });
+    const res = makeRes();
+    const next = vi.fn();
+
+    await preExecutionIntentGuard(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(buildBriefMock).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  test("still evaluates OpenClaw native exec when tools are enabled", async () => {
+    buildBriefMock.mockResolvedValueOnce(makeBrief() as any);
+
+    const req = makeReq({
+      path: "/api/openclaw/runtime/native/exec",
+      originalUrl: "/api/openclaw/runtime/native/exec",
+      body: { prompt: "hola", enableTools: true },
+    });
+    const res = makeRes();
+    const next = vi.fn();
+
+    await preExecutionIntentGuard(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(buildBriefMock).toHaveBeenCalledOnce();
+  });
 });

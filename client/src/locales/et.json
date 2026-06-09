@@ -4,6 +4,11 @@
     "nativeName": "Eesti",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Mõtleb…",
+    "thinkingDuration": "Mõtles {seconds} s",
+    "thinkingToolArgs": "Kuva argumendid",
+    "thinkingTraceLabel": "Assistendi arutluskäik"
+  },
   "literals": {}
 }

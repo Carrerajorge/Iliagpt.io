@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { resolveStateDir } from "./superIntelligence/config/paths.js";
+import { resolveStateDir } from "../openclaw-src/config/paths.js";
 
 function normalizeUserSegment(value: string): string {
   const safe = value

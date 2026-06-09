@@ -4,6 +4,11 @@
     "nativeName": "Српски",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Размишља…",
+    "thinkingDuration": "Размишљао {seconds} с",
+    "thinkingToolArgs": "Прикажи аргументе",
+    "thinkingTraceLabel": "Расуђивање асистента"
+  },
   "literals": {}
 }

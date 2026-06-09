@@ -44,10 +44,12 @@ import {
   Share2,
   Plug,
   Lightbulb,
+  Sparkles,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
 import { cn } from "@/lib/utils";
 import { isAdminUser } from "@/lib/admin";
+import { getCategoryVisual } from "@/lib/gpt-category";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -607,7 +609,13 @@ export function Sidebar({
           </span>
           <span className="pointer-events-none">GPTs</span>
         </button>
-        <button onClick={() => setLocation("/openclaw")} data-tool-motion="openclaw" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-openclaw">
+        <button onClick={() => setLocation("/my-agents")} data-tool-motion="agents" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-agents">
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <Sparkles className="sidebar-tool-icon h-4 w-4 text-violet-500 pointer-events-none" />
+          </span>
+          <span className="pointer-events-none">Agentes</span>
+        </button>
+        <button onClick={() => { setLocation("/openclaw"); }} data-tool-motion="openclaw" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-openclaw">
           <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
             <span aria-hidden="true" className="sidebar-tool-icon text-[14px] leading-none pointer-events-none">🦞</span>
           </span>
@@ -795,27 +803,46 @@ export function Sidebar({
               <div className="px-1.5 py-0.5">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">GPTs</span>
               </div>
-              {pinnedGpts.map((pinned) => (
-                <div key={pinned.gptId} className="group flex items-center justify-between px-1.5 py-1 rounded-md cursor-pointer hover:bg-accent/40 transition-colors"
-                  onClick={() => setLocation(`/gpts/${pinned.gpt.slug || pinned.gptId}`)} data-testid={`pinned-gpt-${pinned.gptId}`}>
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    {pinned.gpt.avatar ? <img src={pinned.gpt.avatar} alt={pinned.gpt.name} className="h-4 w-4 rounded object-cover shrink-0" /> : <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
-                    <span className="truncate text-[12px]">{pinned.gpt.name}</span>
+              {pinnedGpts.map((pinned) => {
+                const visual = getCategoryVisual(pinned.gpt);
+                const CatIcon = visual.icon;
+                const target = `/gpts/${pinned.gpt.slug || pinned.gptId}${visual.mode !== "generic" ? `?mode=${visual.mode}` : ""}`;
+                return (
+                  <div
+                    key={pinned.gptId}
+                    className={cn(
+                      "gpt-fx-root group flex items-center justify-between px-1.5 py-1 rounded-md cursor-pointer hover:bg-accent/40 transition-colors",
+                      visual.effectClass
+                    )}
+                    onClick={() => setLocation(target)}
+                    data-testid={`pinned-gpt-${pinned.gptId}`}
+                    title={visual.description}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={cn("gpt-fx-icon bg-gradient-to-br ring-1", visual.gradient, visual.ringColor)}>
+                        {pinned.gpt.avatar ? (
+                          <img src={pinned.gpt.avatar} alt={pinned.gpt.name} className="h-[14px] w-[14px] rounded-sm object-cover" />
+                        ) : (
+                          <CatIcon className="h-3 w-3 text-foreground/80" />
+                        )}
+                      </span>
+                      <span className="truncate text-[12px]">{pinned.gpt.name}</span>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                        <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-accent" data-testid={`button-pinned-gpt-menu-${pinned.gptId}`}>
+                          <MoreHorizontal className="h-3 w-3 text-muted-foreground" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); unpinGpt(pinned.gptId); }} data-testid={`button-unpin-gpt-${pinned.gptId}`}>
+                          <Pin className="h-3.5 w-3.5 mr-2" /> Desfijar
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                      <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-accent" data-testid={`button-pinned-gpt-menu-${pinned.gptId}`}>
-                        <MoreHorizontal className="h-3 w-3 text-muted-foreground" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
-                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); unpinGpt(pinned.gptId); }} data-testid={`button-unpin-gpt-${pinned.gptId}`}>
-                        <Pin className="h-3.5 w-3.5 mr-2" /> Desfijar
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

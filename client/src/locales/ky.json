@@ -4,6 +4,11 @@
     "nativeName": "Кыргызча",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Ойлонууда…",
+    "thinkingDuration": "{seconds} сек ойлонду",
+    "thinkingToolArgs": "Аргументтерди көрүү",
+    "thinkingTraceLabel": "Жардамчынын ой жүгүртүүсү"
+  },
   "literals": {}
 }

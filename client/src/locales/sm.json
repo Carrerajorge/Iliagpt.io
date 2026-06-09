@@ -4,6 +4,11 @@
     "nativeName": "Gagana Samoa",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "O lo'o mafaufau…",
+    "thinkingDuration": "Sa mafaufau mo le {seconds} sekone",
+    "thinkingToolArgs": "Va'ai finauga",
+    "thinkingTraceLabel": "Mafaufauga a le fesoasoani"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "Íslenska",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Hugsar…",
+    "thinkingDuration": "Hugsaði í {seconds} sek.",
+    "thinkingToolArgs": "Skoða viðföng",
+    "thinkingTraceLabel": "Röksemdafærsla aðstoðarmannsins"
+  },
   "literals": {}
 }

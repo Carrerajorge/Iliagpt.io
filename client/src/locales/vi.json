@@ -4,6 +4,11 @@
     "nativeName": "Tiếng Việt",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Đang suy nghĩ…",
+    "thinkingDuration": "Đã suy nghĩ trong {seconds} giây",
+    "thinkingToolArgs": "Xem đối số",
+    "thinkingTraceLabel": "Suy luận của trợ lý"
+  },
   "literals": {}
 }

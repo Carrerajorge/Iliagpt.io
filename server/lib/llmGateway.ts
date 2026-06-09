@@ -63,6 +63,12 @@ interface LLMRequestOptions {
    * avoids orphan LLM calls consuming quota.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Reasoning effort for models with extended thinking (OpenRouter `reasoning` param).
+   * Defaults to "medium" for models known to support it; "none" disables the param.
+   * Models without reasoning support never receive the param (require_parameters stays false).
+   */
+  reasoningEffort?: "low" | "medium" | "high" | "none";
 }
 
 interface LLMResponseUsage {
@@ -102,6 +108,13 @@ interface LLMResponse {
   incompleteDetails?: IncompleteDetails | null;
 }
 
+interface StreamToolCallDelta {
+  index: number;
+  id?: string;
+  name?: string;
+  argsDelta?: string;
+}
+
 interface StreamChunk {
   content: string;
   sequenceId: number;
@@ -113,6 +126,14 @@ interface StreamChunk {
     toProvider: LLMProvider;
   };
   checkpoint?: StreamCheckpoint;
+  /** Reasoning/extended-thinking delta (OpenRouter `delta.reasoning`, Anthropic thinking_delta). */
+  reasoning?: string;
+  /** Raw `reasoning_details` array from OpenRouter, attached to the final (done) chunk.
+   *  Must be persisted verbatim and re-sent in later turns for Anthropic models with
+   *  tool calls so the signed thinking chain is not broken. */
+  reasoningDetails?: unknown[];
+  /** Partial tool-call deltas (`delta.tool_calls`) so the UI can render a live tool trace. */
+  toolCalls?: StreamToolCallDelta[];
 }
 
 interface StreamCheckpoint {
@@ -345,11 +366,77 @@ function messageContentToText(content: ChatCompletionMessageParam["content"]): s
   return "";
 }
 
+// ── Reasoning (extended thinking) support per model ─────────────────────────
+// OpenRouter normalizes extended thinking across providers via the `reasoning`
+// request param and `delta.reasoning` / `delta.reasoning_details` response
+// fields. The param must ONLY be sent to models that support it — sending it
+// to an unsupported model can fail the request. Pattern allowlist, extensible
+// per deployment via env:
+//   OPENROUTER_REASONING_MODELS  — comma-separated extra model substrings
+//   OPENROUTER_REASONING_EFFORT  — default effort (low|medium|high), default medium
+//   OPENROUTER_REASONING_DISABLED=1 — kill switch
+const REASONING_MODEL_PATTERNS: RegExp[] = [
+  /^anthropic\/claude/i,           // Claude 3.7+ extended thinking
+  /^openai\/(o[134]|gpt-5)/i,      // OpenAI o-series / GPT-5 reasoning
+  /^deepseek\/deepseek-r1/i,       // DeepSeek R1
+  /^google\/gemini-.*(thinking|2\.5|3)/i, // Gemini thinking variants
+  /^qwen\/(qwq|qwen3)/i,           // QwQ / Qwen3 reasoning
+  /^x-ai\/grok-[34]/i,             // Grok 3/4 reasoning
+  /^moonshotai\/kimi-k2/i,         // Kimi K2 thinking
+];
+
+function defaultReasoningEffort(): "low" | "medium" | "high" {
+  const raw = String(process.env.OPENROUTER_REASONING_EFFORT || "medium").trim().toLowerCase();
+  return raw === "low" || raw === "high" ? raw : "medium";
+}
+
+/**
+ * Resolve the reasoning effort to request for a model, or null when the model
+ * does not support reasoning (the param must then be omitted entirely).
+ */
+export function resolveReasoningEffort(
+  model: string | undefined,
+  optionEffort?: "low" | "medium" | "high" | "none",
+): "low" | "medium" | "high" | null {
+  if (process.env.OPENROUTER_REASONING_DISABLED === "1") return null;
+  if (optionEffort === "none") return null;
+  const m = String(model || "").trim().toLowerCase();
+  if (!m) return null;
+  const extra = String(process.env.OPENROUTER_REASONING_MODELS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const supported =
+    REASONING_MODEL_PATTERNS.some((rx) => rx.test(m)) ||
+    extra.some((needle) => m.includes(needle));
+  if (!supported) return null;
+  return optionEffort && optionEffort !== "none" ? optionEffort : defaultReasoningEffort();
+}
+
+function isAnthropicOpenRouterModel(model: string): boolean {
+  return /^anthropic\//i.test(String(model || "").trim());
+}
+
 function normalizeMessagesForOpenRouterModel(
   model: string,
   messages: ChatCompletionMessageParam[],
 ): ChatCompletionMessageParam[] {
   const normalizedModel = String(model || "").trim().toLowerCase();
+
+  // `reasoning_details` (signed thinking blocks) must be re-sent VERBATIM on
+  // assistant messages for Anthropic models with tool calls — and stripped for
+  // every other model, where the field is unknown and can fail validation.
+  const keepReasoningDetails = isAnthropicOpenRouterModel(normalizedModel);
+  messages = messages.map((message) => {
+    const anyMessage = message as Record<string, unknown>;
+    if (anyMessage.role === "assistant" && anyMessage.reasoning_details != null) {
+      if (keepReasoningDetails) return message;
+      const { reasoning_details: _dropped, ...rest } = anyMessage;
+      return rest as ChatCompletionMessageParam;
+    }
+    return message;
+  });
+
   const requiresUserOnlyInstructions =
     normalizedModel.startsWith("google/gemma-") && normalizedModel.endsWith(":free");
 
@@ -2254,6 +2341,11 @@ class LLMGateway {
             throw new Error(`Empty streamed response from provider ${provider}`);
           }
 
+          const chunkExtras = chunk as {
+            reasoning?: string;
+            reasoningDetails?: unknown[];
+            toolCalls?: StreamToolCallDelta[];
+          };
           const streamChunk: StreamChunk = {
             content: chunk.content,
             sequenceId: sequenceId++,
@@ -2261,6 +2353,9 @@ class LLMGateway {
             requestId,
             provider,
             providerSwitch: pendingProviderSwitch,
+            ...(chunkExtras.reasoning ? { reasoning: chunkExtras.reasoning } : {}),
+            ...(chunkExtras.reasoningDetails ? { reasoningDetails: chunkExtras.reasoningDetails } : {}),
+            ...(chunkExtras.toolCalls ? { toolCalls: chunkExtras.toolCalls } : {}),
             checkpoint: {
               requestId,
               sequenceId,
@@ -2462,7 +2557,7 @@ class LLMGateway {
     messages: ChatCompletionMessageParam[],
     options: LLMRequestOptions,
     requestId: string
-  ): AsyncGenerator<{ content: string; done: boolean }, void, unknown> {
+  ): AsyncGenerator<{ content: string; done: boolean; reasoning?: string; reasoningDetails?: unknown[]; toolCalls?: StreamToolCallDelta[] }, void, unknown> {
     const modelProvider = detectProviderFromModel(options.model);
 
     let model: string;
@@ -2534,6 +2629,13 @@ class LLMGateway {
           data_collection: dataCollectionOverride || preferredOpenRouterDataCollection,
           require_parameters: false,
         };
+        // Extended thinking: request reasoning ONLY from models that support it
+        // (resolveReasoningEffort returns null otherwise — the param is omitted
+        // entirely so non-reasoning models keep streaming exactly as before).
+        const reasoningEffort = resolveReasoningEffort(modelOverride, options.reasoningEffort);
+        if (reasoningEffort) {
+          createParams.reasoning = { effort: reasoningEffort };
+        }
       }
 
       const stream = await client.chat.completions.create(
@@ -2623,17 +2725,71 @@ class LLMGateway {
 
     let buffer = "";
     const flushThreshold = 50;
+    // Reasoning is buffered separately from content; deltas are flushed in
+    // arrival order (content buffer first) so the client always sees
+    // reasoning → text in the same sequence the model emitted them.
+    let reasoningBuffer = "";
+    const collectedReasoningDetails: unknown[] = [];
 
     try {
       for await (const chunk of stream) {
         resetIdle();
 
-        const content = chunk.choices[0]?.delta?.content || "";
-        buffer += content;
+        const delta: any = chunk.choices?.[0]?.delta ?? {};
+        const content = delta.content || "";
 
-        if (buffer.length >= flushThreshold || content.includes("\n") || content.includes(".")) {
-          yield { content: buffer, done: false };
-          buffer = "";
+        // OpenRouter normalizes extended thinking to `delta.reasoning` (string)
+        // and `delta.reasoning_details` (array of raw provider blocks).
+        const reasoningDelta = typeof delta.reasoning === "string" ? delta.reasoning : "";
+        if (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length > 0) {
+          collectedReasoningDetails.push(...delta.reasoning_details);
+        }
+
+        if (reasoningDelta) {
+          // Preserve ordering: flush any pending text before the reasoning delta.
+          if (buffer) {
+            yield { content: buffer, done: false };
+            buffer = "";
+          }
+          reasoningBuffer += reasoningDelta;
+          if (reasoningBuffer.length >= flushThreshold || reasoningDelta.includes("\n")) {
+            yield { content: "", reasoning: reasoningBuffer, done: false };
+            reasoningBuffer = "";
+          }
+        }
+
+        // Tool-call deltas: forward name + partial arguments so the client can
+        // render a live tool-use trace.
+        if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+          if (reasoningBuffer) {
+            yield { content: "", reasoning: reasoningBuffer, done: false };
+            reasoningBuffer = "";
+          }
+          if (buffer) {
+            yield { content: buffer, done: false };
+            buffer = "";
+          }
+          const toolCalls: StreamToolCallDelta[] = delta.tool_calls.map((tc: any) => ({
+            index: Number(tc?.index) || 0,
+            ...(tc?.id ? { id: String(tc.id) } : {}),
+            ...(tc?.function?.name ? { name: String(tc.function.name) } : {}),
+            ...(typeof tc?.function?.arguments === "string" ? { argsDelta: tc.function.arguments } : {}),
+          }));
+          yield { content: "", toolCalls, done: false };
+        }
+
+        if (content) {
+          // First visible token after reasoning: flush the reasoning buffer so
+          // the client can close the thinking phase before text starts.
+          if (reasoningBuffer) {
+            yield { content: "", reasoning: reasoningBuffer, done: false };
+            reasoningBuffer = "";
+          }
+          buffer += content;
+          if (buffer.length >= flushThreshold || content.includes("\n") || content.includes(".")) {
+            yield { content: buffer, done: false };
+            buffer = "";
+          }
         }
       }
     } catch (error: any) {
@@ -2649,11 +2805,18 @@ class LLMGateway {
       if (idleTimeoutId) clearTimeout(idleTimeoutId);
     }
 
+    if (reasoningBuffer) {
+      yield { content: "", reasoning: reasoningBuffer, done: false };
+    }
     if (buffer) {
       yield { content: buffer, done: false };
     }
 
-    yield { content: "", done: true };
+    yield {
+      content: "",
+      done: true,
+      ...(collectedReasoningDetails.length > 0 ? { reasoningDetails: collectedReasoningDetails } : {}),
+    };
   }
 
   private async * streamAnthropic(
@@ -2712,6 +2875,20 @@ class LLMGateway {
     try {
       for await (const event of stream as any) {
         resetIdle();
+
+        if (event?.type === "content_block_delta" && event?.delta?.type === "thinking_delta") {
+          // Anthropic extended thinking (direct API): forward as reasoning so
+          // the typed SSE pipeline treats it the same as OpenRouter reasoning.
+          const thinking = String(event.delta.thinking || "");
+          if (thinking) {
+            if (buffer) {
+              yield { content: buffer, done: false };
+              buffer = "";
+            }
+            yield { content: "", reasoning: thinking, done: false } as any;
+          }
+          continue;
+        }
 
         if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta") {
           const text = String(event.delta.text || "");

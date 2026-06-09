@@ -4,6 +4,11 @@
     "nativeName": "Euskara",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Pentsatzen…",
+    "thinkingDuration": "{seconds} s pentsatu du",
+    "thinkingToolArgs": "Ikusi argumentuak",
+    "thinkingTraceLabel": "Laguntzailearen arrazoibidea"
+  },
   "literals": {}
 }

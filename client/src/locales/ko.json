@@ -4,6 +4,11 @@
     "nativeName": "한국어",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "생각하는 중…",
+    "thinkingDuration": "{seconds}초 동안 생각했습니다",
+    "thinkingToolArgs": "인수 보기",
+    "thinkingTraceLabel": "어시스턴트의 추론"
+  },
   "literals": {}
 }

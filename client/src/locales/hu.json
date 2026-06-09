@@ -4,6 +4,11 @@
     "nativeName": "Magyar",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Gondolkodik…",
+    "thinkingDuration": "{seconds} mp-ig gondolkodott",
+    "thinkingToolArgs": "Argumentumok megtekintése",
+    "thinkingTraceLabel": "Az asszisztens érvelése"
+  },
   "literals": {}
 }

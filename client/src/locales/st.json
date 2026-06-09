@@ -4,6 +4,11 @@
     "nativeName": "Sesotho",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "O a nahana…",
+    "thinkingDuration": "O nahanne metsotswana e {seconds}",
+    "thinkingToolArgs": "Sheba dikgang",
+    "thinkingTraceLabel": "Monahano wa mothusi"
+  },
   "literals": {}
 }

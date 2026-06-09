@@ -4,6 +4,11 @@
     "nativeName": "ਪੰਜਾਬੀ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "ਸੋਚ ਰਿਹਾ ਹੈ…",
+    "thinkingDuration": "{seconds} ਸਕਿੰਟ ਸੋਚਿਆ",
+    "thinkingToolArgs": "ਆਰਗੂਮੈਂਟ ਵੇਖੋ",
+    "thinkingTraceLabel": "ਸਹਾਇਕ ਦੀ ਦਲੀਲ"
+  },
   "literals": {}
 }

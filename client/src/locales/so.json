@@ -4,6 +4,11 @@
     "nativeName": "Soomaali",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Wuu fekerayaa…",
+    "thinkingDuration": "Wuxuu fekeray {seconds} ilbiriqsi",
+    "thinkingToolArgs": "Eeg doodaha",
+    "thinkingTraceLabel": "Fikirka kaaliyaha"
+  },
   "literals": {}
 }

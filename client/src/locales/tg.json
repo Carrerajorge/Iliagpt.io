@@ -4,6 +4,11 @@
     "nativeName": "Тоҷикӣ",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Фикр мекунад…",
+    "thinkingDuration": "{seconds} сония фикр кард",
+    "thinkingToolArgs": "Дидани аргументҳо",
+    "thinkingTraceLabel": "Мулоҳизаи ёрдамчӣ"
+  },
   "literals": {}
 }

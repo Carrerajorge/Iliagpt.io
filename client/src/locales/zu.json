@@ -4,6 +4,11 @@
     "nativeName": "isiZulu",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Iyacabanga…",
+    "thinkingDuration": "Icabange imizuzwana engu-{seconds}",
+    "thinkingToolArgs": "Buka izimpikiswano",
+    "thinkingTraceLabel": "Ukucabanga komsizi"
+  },
   "literals": {}
 }

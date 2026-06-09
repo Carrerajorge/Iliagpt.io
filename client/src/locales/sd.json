@@ -4,6 +4,11 @@
     "nativeName": "سنڌي",
     "rtl": true
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "سوچي رهيو آهي…",
+    "thinkingDuration": "{seconds} سيڪنڊ سوچيو",
+    "thinkingToolArgs": "دليل ڏسو",
+    "thinkingTraceLabel": "مددگار جو استدلال"
+  },
   "literals": {}
 }

@@ -4,6 +4,11 @@
     "nativeName": "Cymraeg",
     "rtl": false
   },
-  "messages": {},
+  "messages": {
+    "thinkingHeader": "Yn meddwl…",
+    "thinkingDuration": "Meddyliodd am {seconds} eiliad",
+    "thinkingToolArgs": "Gweld dadleuon",
+    "thinkingTraceLabel": "Rhesymu'r cynorthwyydd"
+  },
   "literals": {}
 }
