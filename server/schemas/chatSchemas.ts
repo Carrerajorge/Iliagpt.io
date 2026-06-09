@@ -101,6 +101,10 @@ export const streamChatRequestSchema = applyChatAttachmentRefinements(baseChatRe
 
     // Streaming/runtime controls (used by /api/chat/stream)
     latencyMode: z.enum(['fast', 'deep', 'auto']).optional(),
+    // Extended thinking controls: per-request effort override, and a simple
+    // per-chat toggle (thinking:false → effort "none", like claude.ai's switch).
+    reasoningEffort: z.enum(['low', 'medium', 'high', 'none']).optional(),
+    thinking: z.boolean().optional(),
     queueMode: z.enum(['queue', 'replace', 'reject']).optional(),
     forceWebSearch: z.boolean().optional(),
     webSearchAuto: z.boolean().optional(),

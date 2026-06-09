@@ -176,6 +176,27 @@ export function createOpenAICompatRouter(): Router {
         res.write(`data: ${JSON.stringify(roleChunk)}\n\n`);
 
         for await (const chunk of gen) {
+          // Extended thinking passthrough — DeepSeek-compatible field name
+          // (`reasoning_content`), so OpenAI-SDK clients of this API receive
+          // the thinking stream from ANY connected reasoning model.
+          const chunkReasoning = (chunk as { reasoning?: string }).reasoning;
+          if (chunkReasoning) {
+            const reasoningChunk = {
+              id: completionId,
+              object: "chat.completion.chunk",
+              created,
+              model,
+              choices: [
+                {
+                  index: 0,
+                  delta: { reasoning_content: chunkReasoning },
+                  finish_reason: null,
+                },
+              ],
+            };
+            res.write(`data: ${JSON.stringify(reasoningChunk)}\n\n`);
+          }
+
           if (chunk.content) {
             const sseChunk = {
               id: completionId,

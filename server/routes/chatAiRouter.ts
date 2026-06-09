@@ -5462,6 +5462,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         forceWebSearch,
         webSearchAuto,
         latencyMode: rawLatencyMode,
+        reasoningEffort: rawReasoningEffort,
+        thinking: rawThinkingToggle,
         lastImageBase64,
         lastImageId,
         skillId,
@@ -8527,11 +8529,17 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
           modelMessages = truncation.messages as any[];
         }
 
+        // Extended thinking controls: explicit per-request effort wins;
+        // thinking:false (the claude.ai-style toggle) disables it entirely.
+        const effectiveReasoningEffort = rawThinkingToggle === false
+          ? "none"
+          : (["low", "medium", "high", "none"].includes(rawReasoningEffort) ? rawReasoningEffort : undefined);
         const streamLlmOptions = {
           userId: userId || streamConversationId || "anonymous",
           requestId,
           model: effectiveModel,
           provider: effectiveProvider,
+          ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
           disableImageGeneration: hasAttachments,
           maxTokens: laneMaxTokens,
           // Phase 1.1: propagate caller cancellation down to the provider stream

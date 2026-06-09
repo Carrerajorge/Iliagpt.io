@@ -25,6 +25,8 @@ import { costEngine } from "../services/finops/costEngine";
 import { secretManager } from "../services/secretManager";
 import { env } from "../config/env";
 import { ConcurrencyGate, type ConcurrencyGateState } from "./concurrencyGate";
+import { getModelCapabilities, clampMaxOutput } from "../llm/modelCapabilities";
+import { ThinkTagStreamParser } from "../llm/thinkTagParser";
 import { tokenCounter } from "./tokenCounter";
 import {
   recordLlmGatewayCacheHit,
@@ -407,6 +409,7 @@ export function resolveReasoningEffort(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   const supported =
+    getModelCapabilities(m).reasoning !== null ||
     REASONING_MODEL_PATTERNS.some((rx) => rx.test(m)) ||
     extra.some((needle) => m.includes(needle));
   if (!supported) return null;
@@ -415,6 +418,25 @@ export function resolveReasoningEffort(
 
 function isAnthropicOpenRouterModel(model: string): boolean {
   return /^anthropic\//i.test(String(model || "").trim());
+}
+
+// ── Prompt caching (Anthropic) ───────────────────────────────────────────
+// IliaGPT's system prompt is large and identical across turns of a chat —
+// marking it with cache_control lets Anthropic cache it (90% input-cost
+// reduction on cache hits, faster TTFT). Only applied above a size floor
+// (caching below ~1024 tokens is rejected by the API) and only for models
+// the capability registry flags as promptCaching-capable.
+// Env: ANTHROPIC_PROMPT_CACHE_DISABLED=1 to turn off.
+const PROMPT_CACHE_MIN_CHARS = 4096; // ~1024 tokens
+export function buildCacheableAnthropicSystem(
+  system: string | undefined,
+  model: string,
+): string | Array<{ type: "text"; text: string; cache_control: { type: "ephemeral" } }> | undefined {
+  if (!system) return system;
+  if (process.env.ANTHROPIC_PROMPT_CACHE_DISABLED === "1") return system;
+  if (system.length < PROMPT_CACHE_MIN_CHARS) return system;
+  if (!getModelCapabilities(model).promptCaching) return system;
+  return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
 }
 
 function normalizeMessagesForOpenRouterModel(
@@ -2575,7 +2597,12 @@ class LLMGateway {
 
     let activeModel = model;
     const initialIsFreeModel = activeModel.endsWith(":free");
-    const effectiveMaxTokens = initialIsFreeModel ? undefined : options.maxTokens;
+    // Clamp the requested output budget to what the model can actually emit
+    // (capability registry) — prevents provider 4xx on oversized max_tokens
+    // and stops large-output models from being capped by stale defaults.
+    const effectiveMaxTokens = initialIsFreeModel
+      ? undefined
+      : clampMaxOutput(activeModel, options.maxTokens);
     const preferredOpenRouterDataCollection =
       String(process.env.OPENROUTER_DATA_COLLECTION || "deny").trim().toLowerCase() === "allow"
         ? "allow"
@@ -2730,19 +2757,34 @@ class LLMGateway {
     // reasoning → text in the same sequence the model emitted them.
     let reasoningBuffer = "";
     const collectedReasoningDetails: unknown[] = [];
+    // Self-hosted reasoning models (R1 distills, QwQ) emit <think>…</think>
+    // tags inside the content stream instead of a structured field — the
+    // capability registry flags them and the incremental parser splits the
+    // stream so thinking never leaks into the visible answer.
+    const thinkParser = getModelCapabilities(activeModel).reasoning === "think-tag"
+      ? new ThinkTagStreamParser()
+      : null;
 
     try {
       for await (const chunk of stream) {
         resetIdle();
 
         const delta: any = chunk.choices?.[0]?.delta ?? {};
-        const content = delta.content || "";
+        let content = delta.content || "";
 
-        // OpenRouter normalizes extended thinking to `delta.reasoning` (string)
-        // and `delta.reasoning_details` (array of raw provider blocks).
-        const reasoningDelta = typeof delta.reasoning === "string" ? delta.reasoning : "";
+        // OpenRouter normalizes extended thinking to `delta.reasoning`;
+        // DeepSeek's direct API uses `delta.reasoning_content`.
+        let reasoningDelta = typeof delta.reasoning === "string"
+          ? delta.reasoning
+          : (typeof delta.reasoning_content === "string" ? delta.reasoning_content : "");
         if (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length > 0) {
           collectedReasoningDetails.push(...delta.reasoning_details);
+        }
+
+        if (thinkParser && content) {
+          const split = thinkParser.push(content);
+          content = split.content;
+          if (split.reasoning) reasoningDelta += split.reasoning;
         }
 
         if (reasoningDelta) {
@@ -2805,6 +2847,11 @@ class LLMGateway {
       if (idleTimeoutId) clearTimeout(idleTimeoutId);
     }
 
+    if (thinkParser) {
+      const tail = thinkParser.flush();
+      if (tail.reasoning) reasoningBuffer += tail.reasoning;
+      if (tail.content) buffer += tail.content;
+    }
     if (reasoningBuffer) {
       yield { content: "", reasoning: reasoningBuffer, done: false };
     }
@@ -2856,16 +2903,38 @@ class LLMGateway {
       }, STREAM_IDLE_TIMEOUT_MS);
     };
 
+    // ── Extended thinking (Anthropic direct) ──────────────────────────────
+    // For thinking-capable Claude models, REQUEST thinking explicitly (the
+    // OpenRouter path uses `reasoning`; direct Anthropic needs `thinking`).
+    // Anthropic constraints: max_tokens MUST exceed budget_tokens, and
+    // temperature must be 1 (top_p unset) while thinking is enabled.
+    const anthropicEffort = getModelCapabilities(model).reasoning === "anthropic"
+      ? resolveReasoningEffort(model, options.reasoningEffort)
+      : null;
+    const thinkingBudget = anthropicEffort === "low" ? 2048 : anthropicEffort === "high" ? 8192 : 4096;
+    const baseMaxTokens = clampMaxOutput(model, options.maxTokens) ?? 1024;
+    const requestParams: Record<string, unknown> = anthropicEffort
+      ? {
+          model,
+          system: buildCacheableAnthropicSystem(system, model),
+          messages: anthropicMessages,
+          max_tokens: Math.max(baseMaxTokens, thinkingBudget + 2048),
+          temperature: 1,
+          thinking: { type: "enabled", budget_tokens: thinkingBudget },
+          stream: true,
+        }
+      : {
+          model,
+          system: buildCacheableAnthropicSystem(system, model),
+          messages: anthropicMessages,
+          max_tokens: baseMaxTokens,
+          temperature: options.temperature ?? 0.7,
+          top_p: options.topP ?? 1,
+          stream: true,
+        };
+
     const stream = await client.messages.create(
-      {
-        model,
-        system,
-        messages: anthropicMessages,
-        max_tokens: options.maxTokens ?? 1024,
-        temperature: options.temperature ?? 0.7,
-        top_p: options.topP ?? 1,
-        stream: true,
-      } as any,
+      requestParams as any,
       { signal: controller.signal as any },
     );
 
