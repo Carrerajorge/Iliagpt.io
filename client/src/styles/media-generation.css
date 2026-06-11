@@ -1,0 +1,202 @@
+/* ── MediaGenerationCard ─────────────────────────────────────────────────────
+   Imported from index.css (never from a TSX module — breaks vitest).        */
+
+.media-gen-card {
+  position: relative;
+  width: min(360px, 100%);
+  border-radius: 24px;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(120% 90% at 15% 10%, hsl(258 90% 66% / 0.14), transparent 55%),
+    radial-gradient(110% 80% at 85% 20%, hsl(199 95% 60% / 0.12), transparent 55%),
+    radial-gradient(130% 100% at 50% 100%, hsl(330 85% 65% / 0.10), transparent 60%),
+    hsl(var(--muted) / 0.45);
+  border: 1px solid hsl(var(--border) / 0.7);
+  box-shadow:
+    0 1px 2px hsl(var(--foreground) / 0.04),
+    0 12px 40px -12px hsl(258 90% 60% / 0.18);
+}
+
+.dark .media-gen-card {
+  background:
+    radial-gradient(120% 90% at 15% 10%, hsl(258 90% 66% / 0.20), transparent 55%),
+    radial-gradient(110% 80% at 85% 20%, hsl(199 95% 60% / 0.16), transparent 55%),
+    radial-gradient(130% 100% at 50% 100%, hsl(330 85% 65% / 0.14), transparent 60%),
+    hsl(var(--muted) / 0.35);
+}
+
+/* Slow drifting aurora layer */
+.media-gen-aurora {
+  position: absolute;
+  inset: -40%;
+  z-index: -1;
+  background: conic-gradient(
+    from 0deg at 50% 50%,
+    hsl(258 90% 66% / 0.16),
+    hsl(199 95% 60% / 0.12),
+    hsl(330 85% 65% / 0.14),
+    hsl(45 95% 60% / 0.10),
+    hsl(258 90% 66% / 0.16)
+  );
+  filter: blur(48px);
+  animation: media-gen-aurora-spin 14s linear infinite;
+}
+
+@keyframes media-gen-aurora-spin {
+  from { transform: rotate(0deg) scale(1); }
+  50%  { transform: rotate(180deg) scale(1.08); }
+  to   { transform: rotate(360deg) scale(1); }
+}
+
+/* Subtle dot grid over the canvas */
+.media-gen-grid {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(hsl(var(--foreground) / 0.10) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(120% 90% at 50% 45%, black 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(120% 90% at 50% 45%, black 30%, transparent 75%);
+}
+
+/* Diagonal light sweep */
+.media-gen-sweep {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    hsl(0 0% 100% / 0.10) 45%,
+    hsl(0 0% 100% / 0.22) 50%,
+    hsl(0 0% 100% / 0.10) 55%,
+    transparent 70%
+  );
+  background-size: 250% 250%;
+  animation: media-gen-sweep 2.8s ease-in-out infinite;
+}
+
+@keyframes media-gen-sweep {
+  0%   { background-position: 130% 130%; }
+  100% { background-position: -30% -30%; }
+}
+
+/* Floating particles */
+.media-gen-particle {
+  position: absolute;
+  border-radius: 9999px;
+  opacity: 0;
+  animation: media-gen-float 5.2s ease-in-out infinite;
+}
+
+@keyframes media-gen-float {
+  0%, 100% { transform: translate3d(0, 8px, 0) scale(0.8); opacity: 0; }
+  20%      { opacity: 0.9; }
+  50%      { transform: translate3d(var(--drift-x, 6px), -14px, 0) scale(1); opacity: 0.7; }
+  80%      { opacity: 0.25; }
+}
+
+/* Pulsing halo rings around the center icon */
+.media-gen-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1.5px solid hsl(258 90% 66% / 0.45);
+  animation: media-gen-ring 2.4s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+}
+
+.media-gen-ring:nth-child(2) {
+  animation-delay: 1.2s;
+  border-color: hsl(199 95% 60% / 0.4);
+}
+
+@keyframes media-gen-ring {
+  0%   { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+.media-gen-icon-glow {
+  box-shadow:
+    0 0 0 1px hsl(var(--border) / 0.6),
+    0 8px 24px -6px hsl(258 90% 60% / 0.45),
+    inset 0 1px 0 hsl(0 0% 100% / 0.25);
+  animation: media-gen-breathe 2.6s ease-in-out infinite;
+}
+
+@keyframes media-gen-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.06); }
+}
+
+/* Indeterminate progress bar */
+.media-gen-progressbar {
+  position: relative;
+  height: 3px;
+  border-radius: 9999px;
+  overflow: hidden;
+  background: hsl(var(--foreground) / 0.08);
+}
+
+.media-gen-progressbar::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  width: 38%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, hsl(258 90% 66%), hsl(199 95% 60%), hsl(330 85% 65%));
+  animation: media-gen-progress 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+@keyframes media-gen-progress {
+  0%   { left: -40%; }
+  100% { left: 105%; }
+}
+
+/* Bouncing status dots */
+.media-gen-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: hsl(var(--muted-foreground) / 0.7);
+  animation: media-gen-dot-bounce 1.2s ease-in-out infinite;
+}
+
+.media-gen-dot:nth-child(2) { animation-delay: 0.15s; }
+.media-gen-dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes media-gen-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30%           { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Finished-image reveal: glow sweep that plays once on top of the image */
+.media-gen-reveal-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 35%,
+    hsl(0 0% 100% / 0.35) 50%,
+    transparent 65%
+  );
+  background-size: 250% 250%;
+  animation: media-gen-reveal-flash 1.1s ease-out 0.25s 1 both;
+}
+
+@keyframes media-gen-reveal-flash {
+  0%   { background-position: 135% 135%; opacity: 1; }
+  100% { background-position: -35% -35%; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-gen-aurora,
+  .media-gen-sweep,
+  .media-gen-particle,
+  .media-gen-ring,
+  .media-gen-icon-glow,
+  .media-gen-progressbar::after,
+  .media-gen-dot,
+  .media-gen-reveal-flash {
+    animation: none;
+  }
+}

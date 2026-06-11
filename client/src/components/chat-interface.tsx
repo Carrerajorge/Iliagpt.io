@@ -191,6 +191,8 @@ import { GranularErrorBoundary } from "@/components/ui/granular-error-boundary";
 import { EditorErrorBoundary } from "@/components/error-boundaries";
 import { DataTableWrapper, CleanDataTableComponents, downloadTableAsExcel, copyTableToClipboard } from "./chat-interface/DataTableWrapper";
 import { StreamingIndicator } from "./chat-interface/StreamingIndicator";
+import { MediaGenerationCard, type MediaGenerationProgress } from "@/components/media-generation-card";
+import { generateImageWithProgress } from "@/lib/generate-image-stream";
 import { EditableDocumentPreview, type TextSelection } from "./chat-interface/EditableDocumentPreview";
 import { extractTextFromChildren, isNumericValue } from "./chat-interface/utils";
 import { PdfPreview } from "@/components/PdfPreview";
@@ -1147,6 +1149,8 @@ export function ChatInterface({
   const [isKeyboardShortcutsOpen, setIsKeyboardShortcutsOpen] = useState(false);
   const [screenReaderAnnouncement, setScreenReaderAnnouncement] = useState("");
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [imageGenProgress, setImageGenProgress] = useState<MediaGenerationProgress | null>(null);
+  const [imageGenPrompt, setImageGenPrompt] = useState<string>("");
   const [pendingGeneratedImage, setPendingGeneratedImage] = useState<{ messageId: string; imageData: string } | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [previewUploadedImage, setPreviewUploadedImage] = useState<{ name: string; dataUrl: string } | null>(null);
@@ -6785,6 +6789,8 @@ export function ChatInterface({
           // Generate image if needed
           if (shouldGenerateImage) {
             setIsGeneratingImage(true);
+            setImageGenPrompt(userInput);
+            setImageGenProgress({ stage: "selecting" });
             setAiProcessStepsForChat([
               { step: "Analizando tu petición", status: "done" },
               { step: "Generando imagen con IA", status: "active" },
@@ -6792,16 +6798,12 @@ export function ChatInterface({
             ], submitConversationId);
 
             try {
-              const imageRes = await apiFetch("/api/image/generate", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ prompt: userInput }),
-                signal: abortControllerRef.current.signal
+              const imageData = await generateImageWithProgress(userInput, {
+                signal: abortControllerRef.current.signal,
+                onProgress: setImageGenProgress,
               });
 
-              const imageData = await imageRes.json();
-
-              if (imageRes.ok && imageData.success) {
+              if (imageData.success) {
                 setAiProcessStepsForChat((prev: AiProcessStep[]) => prev.map((s: AiProcessStep) => ({ ...s, status: "done" as const })), submitConversationId);
 
                 const msgId = (Date.now() + 1).toString();
@@ -6853,6 +6855,8 @@ export function ChatInterface({
                 onSendMessage(aiMsg);
 
                 setIsGeneratingImage(false);
+                setImageGenProgress(null);
+                setImageGenPrompt("");
                 setAiStateForChat("idle", submitConversationId);
                 setAiProcessStepsForChat([], submitConversationId);
                 setSelectedTool(null);
@@ -6863,6 +6867,8 @@ export function ChatInterface({
               }
             } catch (imgError: any) {
               setIsGeneratingImage(false);
+              setImageGenProgress(null);
+              setImageGenPrompt("");
               if (imgError.name === "AbortError") {
                 setAiStateForChat("idle", submitConversationId);
                 setAiProcessStepsForChat([], submitConversationId);
@@ -8365,22 +8371,15 @@ IMPORTANTE:
                       </div>
                     )}
 
-                    {/* Image Generation Loading Skeleton */}
+                    {/* Image Generation Card — animated placeholder with live progress */}
                     {isGeneratingImage && (
                       <div className="flex w-full max-w-3xl mx-auto gap-4 justify-start">
-                        <div className="flex flex-col gap-2 items-start">
-                          <div className="liquid-message-ai-light px-4 py-3 text-sm mb-2">
-                            <div className="flex items-center gap-2">
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              <span>Generando imagen...</span>
-                            </div>
-                          </div>
-                          <div className="px-4">
-                            <div className="w-64 h-64 bg-muted rounded-lg animate-pulse flex items-center justify-center">
-                              <Image className="h-8 w-8 text-muted-foreground" />
-                            </div>
-                          </div>
-                        </div>
+                        <MediaGenerationCard
+                          kind="image"
+                          prompt={imageGenPrompt}
+                          progress={imageGenProgress}
+                          onStop={() => abortControllerRef.current?.abort()}
+                        />
                       </div>
                     )}
 

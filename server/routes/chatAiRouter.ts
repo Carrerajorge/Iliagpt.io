@@ -5,6 +5,7 @@ import { llmGateway } from "../lib/llmGateway";
 import { applySseSecurityHeaders } from "../lib/sseSecurityHeaders";
 import { getOrCreateSession, getEnforcedModel, getSessionById, type GptSessionContract } from "../services/gptSessionService";
 import { generateImage, detectImageRequest, extractImagePrompt } from "../services/imageGeneration";
+import { getModelCatalog, type ImageAspectRatio, type ImageQuality } from "../services/imageEngine";
 import { generateVideo, detectVideoRequest, extractVideoPrompt } from "../services/videoGeneration";
 import { runETLAgent, getAvailableCountries, getAvailableIndicators } from "../etl";
 import { extractAllAttachmentsContent, extractAttachmentContent, formatAttachmentsAsContext, type Attachment } from "../services/attachmentService";
@@ -5121,6 +5122,23 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     }
   });
 
+  const parseImageOptions = (body: Record<string, unknown>) => {
+    const VALID_RATIOS = new Set(["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]);
+    const aspectRatio =
+      typeof body.aspectRatio === "string" && VALID_RATIOS.has(body.aspectRatio)
+        ? (body.aspectRatio as ImageAspectRatio)
+        : undefined;
+    const quality =
+      body.quality === "hd" || body.quality === "standard"
+        ? (body.quality as ImageQuality)
+        : undefined;
+    const model =
+      typeof body.model === "string" && body.model.trim().length > 0
+        ? body.model.trim()
+        : undefined;
+    return { model, aspectRatio, quality };
+  };
+
   router.post("/image/generate", async (req, res) => {
     try {
       const { prompt } = req.body;
@@ -5131,12 +5149,15 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       console.log("[ImageGen] Generating image for prompt:", prompt);
 
-      const result = await generateImage(prompt);
+      const result = await generateImage(prompt, parseImageOptions(req.body));
 
       res.json({
         success: true,
         imageData: `data:${result.mimeType};base64,${result.imageBase64}`,
-        prompt: result.prompt
+        prompt: result.prompt,
+        model: result.model,
+        provider: result.provider,
+        latencyMs: result.latencyMs
       });
     } catch (error: any) {
       console.error("Image generation error:", error);
@@ -5145,6 +5166,62 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         details: error.message
       });
     }
+  });
+
+  // SSE variant: streams real progress stages (selecting → generating →
+  // fallback → processing → done) so the client card can animate honestly.
+  router.post("/image/generate/stream", async (req, res) => {
+    const { prompt } = req.body;
+    if (!prompt || typeof prompt !== "string") {
+      return res.status(400).json({ error: "Prompt is required" });
+    }
+
+    applySseSecurityHeaders(res);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    const send = (event: string, data: unknown) => {
+      if (res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const abortController = new AbortController();
+    // req 'close' fires once the request body is consumed — use the response
+    // stream instead: it closes early only when the client disconnects.
+    res.on("close", () => {
+      if (!res.writableEnded) abortController.abort();
+    });
+
+    try {
+      const result = await generateImage(
+        prompt,
+        { ...parseImageOptions(req.body), signal: abortController.signal },
+        (progress) => send("progress", progress),
+      );
+      send("done", {
+        success: true,
+        imageData: `data:${result.mimeType};base64,${result.imageBase64}`,
+        prompt: result.prompt,
+        model: result.model,
+        provider: result.provider,
+        latencyMs: result.latencyMs,
+      });
+    } catch (error: any) {
+      console.error("Image generation stream error:", error);
+      send("error", { error: "Failed to generate image", details: error.message });
+    } finally {
+      if (!res.writableEnded) res.end();
+    }
+  });
+
+  router.get("/image/models", (_req, res) => {
+    const catalog = getModelCatalog();
+    res.json({
+      models: catalog,
+      default: catalog.find((model) => model.available)?.id ?? null,
+    });
   });
 
   router.post("/image/detect", (req, res) => {

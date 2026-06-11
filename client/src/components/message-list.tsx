@@ -85,6 +85,7 @@ import { ChatSpreadsheetViewer } from "@/components/chat/ChatSpreadsheetViewer";
 import { normalizeAgentEvent, hasPayloadDetails, type MappedAgentEvent } from "@/lib/agent-event-mapper";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AgentStepsDisplay, type AgentArtifact } from "@/components/agent-steps-display";
+import { MediaGenerationCard, GeneratedMediaReveal } from "@/components/media-generation-card";
 import { ArtifactViewer, type Artifact } from "@/components/artifact-viewer";
 import { NewsCards, SourcesList } from "@/components/news-cards";
 import { SuperAgentDisplay } from "@/components/super-agent-display";
@@ -1899,29 +1900,25 @@ const AssistantMessage = memo(function AssistantMessage({
 
       {showSkeleton && (
         <div className="mt-3">
-          <div className="w-64 h-64 rounded-lg animate-pulse bg-gradient-to-br from-muted/80 via-muted to-muted/80 flex flex-col items-center justify-center gap-3">
-            <div className="w-12 h-12 rounded-lg bg-muted-foreground/10 animate-pulse" />
-            <div className="space-y-2 text-center">
-              <div className="h-3 w-32 bg-muted-foreground/10 rounded animate-pulse mx-auto" />
-              <div className="h-2 w-24 bg-muted-foreground/10 rounded animate-pulse mx-auto" />
-            </div>
-          </div>
+          <MediaGenerationCard kind="image" />
         </div>
       )}
 
       {imageData && (
         <div className="mt-3">
-          <ArtifactViewer
-            artifact={{
-              id: `generated-${message.id}`,
-              type: "image",
-              name: "Imagen generada",
-              url: imageData,
-              mimeType: "image/png"
-            }}
-            onExpand={onOpenLightbox}
-            onDownload={() => onDownloadImage(imageData)}
-          />
+          <GeneratedMediaReveal>
+            <ArtifactViewer
+              artifact={{
+                id: `generated-${message.id}`,
+                type: "image",
+                name: "Imagen generada",
+                url: imageData,
+                mimeType: "image/png"
+              }}
+              onExpand={onOpenLightbox}
+              onDownload={() => onDownloadImage(imageData)}
+            />
+          </GeneratedMediaReveal>
         </div>
       )}
 
